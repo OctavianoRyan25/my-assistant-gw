@@ -1,0 +1,29 @@
+# Environment
+.env
+*.env.local
+
+# Build output
+/bin/
+/dist/
+*.exe
+
+# Go
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# WhatsApp session data (whatsmeow)
+whatsmeow.db
+whatsapp.db*
+*.db
+*.db-shm
+*.db-wal
+store/
+
+# Logs
+*.log
+logs/
