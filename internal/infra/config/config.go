@@ -19,6 +19,9 @@ type Config struct {
 	JWTSecret  string
 
 	// LLM
+	LLMProvider      string // "gemini" or "openrouter"
+	GeminiAPIKey     string
+	GeminiModel      string
 	OpenRouterAPIKey string
 	OpenRouterModel  string
 
@@ -50,6 +53,9 @@ func LoadConfig() (*Config, error) {
 		DBName:     os.Getenv("DB_NAME"),
 		JWTSecret:  os.Getenv("JWT_SECRET"),
 
+		LLMProvider:      getEnvOrDefault("LLM_PROVIDER", "gemini"),
+		GeminiAPIKey:     os.Getenv("GEMINI_API_KEY"),
+		GeminiModel:      getEnvOrDefault("GEMINI_MODEL", "gemini-1.5-flash"),
 		OpenRouterAPIKey: os.Getenv("OPENROUTER_API_KEY"),
 		OpenRouterModel:  getEnvOrDefault("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
 

@@ -187,27 +187,7 @@ Aturan:
 		return nil, err
 	}
 
-	resp = cleanJSONResponse(resp)
-
-	// Try as array first
-	if strings.HasPrefix(resp, "[") {
-		var arr []domain.ReminderParsed
-		if err := json.Unmarshal([]byte(resp), &arr); err != nil {
-			return nil, fmt.Errorf("parse reminder JSON array: %w (raw: %s)", err, resp)
-		}
-		for i := range arr {
-			arr[i].Recurrence = normalizeRecurrence(arr[i].Recurrence)
-		}
-		return arr, nil
-	}
-
-	// Try as single object
-	var single domain.ReminderParsed
-	if err := json.Unmarshal([]byte(resp), &single); err != nil {
-		return nil, fmt.Errorf("parse reminder JSON: %w (raw: %s)", err, resp)
-	}
-	single.Recurrence = normalizeRecurrence(single.Recurrence)
-	return []domain.ReminderParsed{single}, nil
+	return parseRemindersFromJSON(resp)
 }
 
 func (c *openRouterClient) ParseExpense(ctx context.Context, message string) (amount float64, category string, description string, err error) {

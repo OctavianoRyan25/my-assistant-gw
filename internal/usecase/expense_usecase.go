@@ -118,7 +118,7 @@ func FormatExpenseReport(report *domain.ExpenseReport) string {
 
 // FormatExpenseConfirmation returns a short confirmation message after recording.
 func FormatExpenseConfirmation(expense *domain.Expense) string {
-	return fmt.Sprintf("✅ Pengeluaran dicatat!\n• %s\n• Kategori: %s\n• Jumlah: Rp %s\n Jangan boros-boros wir 😹 cari duid susah brok",
+	return fmt.Sprintf("✅ Pengeluaran dicatat!\n• %s\n• Kategori: %s\n• Jumlah: Rp %s\n Jangan boros-boros loh ya😹 cari duid susah",
 		expense.Description,
 		expense.Category,
 		formatRupiah(expense.Amount),

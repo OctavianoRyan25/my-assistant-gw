@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/OctavianoRyan25/my-assistant-gw/internal/delivery/http/handler"
+	"github.com/OctavianoRyan25/my-assistant-gw/internal/domain"
 	"github.com/OctavianoRyan25/my-assistant-gw/internal/infra/config"
 	"github.com/OctavianoRyan25/my-assistant-gw/internal/infra/database"
 	"github.com/OctavianoRyan25/my-assistant-gw/internal/infra/llm"
@@ -61,7 +62,14 @@ func main() {
 	chatRepo     := repository.NewChatRepository(db)
 
 	// ── 6. Infrastructure clients ─────────────────────────────────────────────
-	llmClient    := llm.NewOpenRouterClient(cfg.OpenRouterAPIKey, cfg.OpenRouterModel)
+	var llmClient domain.LLMClient
+	if cfg.LLMProvider == "openrouter" || (cfg.GeminiAPIKey == "" && cfg.OpenRouterAPIKey != "") {
+		log.Info("LLM provider: OpenRouter", zap.String("model", cfg.OpenRouterModel))
+		llmClient = llm.NewOpenRouterClient(cfg.OpenRouterAPIKey, cfg.OpenRouterModel)
+	} else {
+		log.Info("LLM provider: Google Gemini", zap.String("model", cfg.GeminiModel))
+		llmClient = llm.NewGeminiClient(cfg.GeminiAPIKey, cfg.GeminiModel)
+	}
 	searchClient := search.NewDuckDuckGoClient()
 	// Use background context for WhatsApp client init (signal context not created yet)
 	waSender, err := whatsapp.NewWhatsAppClient(context.Background())

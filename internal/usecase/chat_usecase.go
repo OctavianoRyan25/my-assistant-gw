@@ -126,7 +126,7 @@ func (u *chatUsecase) handleReminder(ctx context.Context, message string) (strin
 	// Create all reminders and collect confirmations
 	var lines []string
 	for _, p := range parsed {
-		scheduledAt, err := time.ParseInLocation("2006-01-02 15:04:05", p.ScheduledAt, u.timezone)
+		scheduledAt, err := parseScheduledTime(p.ScheduledAt, u.timezone)
 		if err != nil {
 			u.logger.Warn("skip reminder: invalid scheduled_at", zap.String("raw", p.ScheduledAt), zap.Error(err))
 			continue
@@ -271,4 +271,34 @@ func (u *chatUsecase) saveMessage(ctx context.Context, role, message string) err
 		Message:   message,
 		CreatedAt: time.Now(),
 	})
+}
+
+// parseScheduledTime tries multiple common datetime layouts to parse LLM output reliably.
+func parseScheduledTime(val string, loc *time.Location) (time.Time, error) {
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return time.Time{}, fmt.Errorf("empty datetime string")
+	}
+
+	layouts := []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04:05Z07:00",
+		time.RFC3339,
+		"2006-01-02 15:04:05 -0700",
+		"2006-01-02",
+	}
+
+	for _, layout := range layouts {
+		if t, err := time.ParseInLocation(layout, val, loc); err == nil {
+			// If only date was provided (00:00:00), set default to 08:00 AM
+			if layout == "2006-01-02" {
+				t = time.Date(t.Year(), t.Month(), t.Day(), 8, 0, 0, 0, loc)
+			}
+			return t, nil
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("cannot parse %q as datetime", val)
 }
