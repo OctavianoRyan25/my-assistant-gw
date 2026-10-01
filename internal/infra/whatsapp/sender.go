@@ -199,8 +199,21 @@ func (s *WhatsAppClient) RegisterMessageHandler(chatUC domain.ChatUsecase, allow
 		}
 
 		text := strings.TrimSpace(extractMessageText(msgProto))
+		textLower := strings.ToLower(text)
+
+		listKeywords := []string{"menu", "fitur", "halo", "apa kabar"}
+		isOpening := false
+		for _, keyword := range listKeywords {
+			if strings.Contains(textLower, keyword) {
+				isOpening = true
+				break
+			}
+		}
 
 		switch {
+		case isOpening:
+			go s.handleMenu(evt, log)
+
 		case msgProto.GetImageMessage() != nil:
 			go s.handleImageAsync(evt, chatUC, msgProto.GetImageMessage(), log)
 
@@ -209,7 +222,7 @@ func (s *WhatsAppClient) RegisterMessageHandler(chatUC domain.ChatUsecase, allow
 
 		case text != "":
 			go s.handleTextMessageAsync(evt, chatUC, text, log)
-
+			
 		default:
 			log.Info("pesan diabaikan: bukan gambar, audio, atau teks yang didukung")
 		}
@@ -386,6 +399,39 @@ func (s *WhatsAppClient) handleTextMessageAsync(evt *events.Message, chatUC doma
 	// 9. Kirim balasan ke chat asal
 	targetJID := evt.Info.Chat.String()
 	if err := s.SendMessage(ctx, targetJID, reply); err != nil {
+		log.Error("gagal mengirim balasan WhatsApp", zap.Error(err), zap.String("to", targetJID))
+	} else {
+		log.Info("✅ Berhasil mengirim balasan WhatsApp", zap.String("to", targetJID))
+	}
+}
+
+func (s *WhatsAppClient) handleMenu(evt *events.Message, log *zap.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	log.Info("💬 Memproses pesan WhatsApp",
+	zap.String("from", evt.Info.Sender.User),
+	zap.String("message Menu", "Menu"),
+	)
+
+	// Tandai pesan sudah dibaca (centang biru) & kirim status 'sedang mengetik'
+	_ = s.client.MarkRead(ctx, []types.MessageID{evt.Info.ID}, evt.Info.Timestamp, evt.Info.Chat, evt.Info.Sender)
+	_ = s.client.SendChatPresence(ctx, evt.Info.Chat, types.ChatPresenceComposing, types.ChatPresenceMediaText)
+
+	// Hentikan status mengetik
+	_ = s.client.SendChatPresence(ctx, evt.Info.Chat, types.ChatPresencePaused, types.ChatPresenceMediaText)
+
+	var sb strings.Builder
+	sb.WriteString("Halo wok, ini fitur yang sudah ente develop ya ")
+	sb.WriteString("-Chit chat(Bisa kirim pesan suara juga loh ya) \n")
+	sb.WriteString("-Reminder \n")
+	sb.WriteString("-Expense(Bisa kirim foto) \n")
+	sb.WriteString("-Search \n")
+	sb.WriteString("-Reset \n")
+	sb.WriteString("Silakan pilih fitur dengan mengirim pesan sesuai dengan perintah ya\n")
+	// 9. Kirim balasan ke chat asal
+	targetJID := evt.Info.Chat.String()
+	if err := s.SendMessage(ctx, targetJID, sb.String()); err != nil {
 		log.Error("gagal mengirim balasan WhatsApp", zap.Error(err), zap.String("to", targetJID))
 	} else {
 		log.Info("✅ Berhasil mengirim balasan WhatsApp", zap.String("to", targetJID))
