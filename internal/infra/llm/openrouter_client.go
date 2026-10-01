@@ -284,3 +284,13 @@ func cleanJSONResponse(s string) string {
 	s = strings.TrimSuffix(s, "```")
 	return strings.TrimSpace(s)
 }
+
+// ParseReceiptFromImage is not supported by OpenRouter client (no vision support in this implementation).
+// Switch to Gemini provider (LLM_PROVIDER=gemini) to enable receipt scanning.
+func (c *openRouterClient) ParseReceiptFromImage(_ context.Context, _ []byte, _ string) (*domain.ReceiptParsed, error) {
+	return nil, fmt.Errorf("fitur scan struk tidak tersedia saat menggunakan OpenRouter. Gunakan provider Gemini (LLM_PROVIDER=gemini) untuk mengaktifkan fitur ini")
+}
+
+func (c *openRouterClient) ParseTranscription(_ context.Context, _ []byte, _ string) (string, error) {
+	return "", fmt.Errorf("fitur voice note tidak tersedia saat menggunakan OpenRouter. Gunakan provider Gemini (LLM_PROVIDER=gemini) untuk mengaktifkan fitur ini")
+}

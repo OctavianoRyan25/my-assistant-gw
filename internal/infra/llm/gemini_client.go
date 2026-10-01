@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,8 +38,17 @@ func NewGeminiClient(apiKey, model string) domain.LLMClient {
 }
 
 // Gemini API data structures
+
+// geminiInlineData carries raw bytes (e.g. an image) encoded as base64.
+type geminiInlineData struct {
+	MimeType string `json:"mime_type"`
+	Data     string `json:"data"` // base64-encoded bytes
+}
+
+// geminiPart is flexible: it may carry text OR inlineData (for vision calls).
 type geminiPart struct {
-	Text string `json:"text"`
+	Text       string            `json:"text,omitempty"`
+	InlineData *geminiInlineData `json:"inline_data,omitempty"`
 }
 
 type geminiContent struct {
@@ -392,6 +402,124 @@ Aturan:
 	}
 
 	return amount, parsed.Category, parsed.Description, nil
+}
+
+// ParseReceiptFromImage uses Gemini Vision to extract expense items from a receipt photo.
+func (c *geminiClient) ParseReceiptFromImage(ctx context.Context, imageData []byte, mimeType string) (*domain.ReceiptParsed, error) {
+	if mimeType == "" {
+		mimeType = "image/jpeg"
+	}
+
+	systemPrompt := `Kamu adalah OCR + parser struk belanja. Analisa gambar struk/nota yang dikirim.
+
+Kembalikan JSON dengan format persis:
+{
+  "store_name": "<nama toko/merchant, atau empty string jika tidak ada>",
+  "items": [
+    {"description": "<nama item>", "amount": <harga dalam rupiah, angka>, "category": "<kategori>"}
+  ],
+  "total": <total belanja dalam rupiah, angka. 0 jika tidak terbaca>,
+  "currency": "IDR"
+}
+
+Kategori yang tersedia: makan, transport, hiburan, kesehatan, belanja, tagihan, lainnya
+Aturan:
+- amount dan total harus berupa angka (bukan string), dalam satuan Rupiah.
+- Jika ada item yang amount-nya tidak terbaca dengan jelas, estimasikan dari total atau skip item tersebut.
+- Jika gambar bukan struk/nota/faktur, kembalikan {"store_name":"","items":[],"total":0,"currency":"IDR"}
+- Kembalikan HANYA JSON, tanpa penjelasan apapun.`
+
+	b64 := base64.StdEncoding.EncodeToString(imageData)
+
+	reqBody := geminiRequest{
+		SystemInstruction: &geminiContent{
+			Parts: []geminiPart{{Text: systemPrompt}},
+		},
+		Contents: []geminiContent{
+			{
+				Role: "user",
+				Parts: []geminiPart{
+					{InlineData: &geminiInlineData{MimeType: mimeType, Data: b64}},
+					{Text: "Tolong analisa struk ini dan ekstrak semua item beserta harganya."},
+				},
+			},
+		},
+		GenerationConfig: &geminiGenerationConfig{
+			ResponseMimeType: "application/json",
+		},
+	}
+
+	resp, err := c.callAPI(ctx, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("gemini receipt vision: %w", err)
+	}
+
+	resp = cleanJSONResponse(resp)
+
+	var parsed domain.ReceiptParsed
+	if err := json.Unmarshal([]byte(resp), &parsed); err != nil {
+		return nil, fmt.Errorf("gemini receipt parse JSON: %w (raw: %s)", err, resp)
+	}
+
+	// Normalize amounts stored as strings
+	for i, item := range parsed.Items {
+		if item.Amount == 0 && item.Description != "" {
+			// Try to re-parse if mistakenly zero
+			parsed.Items[i].Amount = 0
+		}
+		if parsed.Items[i].Category == "" {
+			parsed.Items[i].Category = domain.CategoryOther
+		}
+	}
+
+	if parsed.Currency == "" {
+		parsed.Currency = "IDR"
+	}
+
+	return &parsed, nil
+}
+
+func (c *geminiClient) ParseTranscription(ctx context.Context, audioData []byte, mimeType string) (string, error) {
+	// WhatsApp voice notes umumnya bertipe audio/ogg codecs=opus
+	if mimeType == "" {
+		mimeType = "audio/ogg"
+	}
+
+systemPrompt := `Kamu adalah asisten pribadi yang santai kayak temen ngobrol sendiri, bukan asisten formal.
+Tugasmu adalah mendengarkan rekaman pesan suara pengguna di WhatsApp dan langsung menjawab, menanggapi, atau membantu apa yang diminta/dibicarakan.
+
+GAYA KOMUNIKASI:
+- Gunakan bahasa Indonesia santai, akrab (seperti gaya chat WhatsApp antar teman, gunakan kata seperti 'wir', 'nih', 'ya').
+- Jawab secara ringkas, to the point, dan solutif.
+- JANGAN mengulang atau menuliskan kembali isi perkataan pengguna (jangan buat transkrip), langsung berikan respon atau jawabannya.
+- Jika rekaman hening, hanya desah angin/noise, atau tidak jelas sama sekali, jawab santai: "Ora krungu njir, suaramu alon."`
+
+	b64 := base64.StdEncoding.EncodeToString(audioData)
+
+	reqBody := geminiRequest{
+		SystemInstruction: &geminiContent{
+			Parts: []geminiPart{{Text: systemPrompt}},
+		},
+		Contents: []geminiContent{
+			{
+				Role: "user",
+				Parts: []geminiPart{
+					{InlineData: &geminiInlineData{MimeType: mimeType, Data: b64}},
+					{Text: "Dengarkan pesan suaraku ini dan tanggapi langsung pembicaraanku ya."},
+				},
+			},
+		},
+		GenerationConfig: &geminiGenerationConfig{
+			ResponseMimeType: "text/plain",
+		},
+	}
+
+	resp, err := c.callAPI(ctx, reqBody)
+	if err != nil {
+		return "", fmt.Errorf("gemini audio transcription: %w", err)
+	}
+
+	return resp, nil
 }
 
 // callAPI sends a request to Google Gemini API and returns the generated text.

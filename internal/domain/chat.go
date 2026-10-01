@@ -14,11 +14,12 @@ const (
 
 // Intent types for routing
 const (
-	IntentReminder    = "reminder"
-	IntentExpense     = "expense"
-	IntentSearch      = "search"
-	IntentGeneralChat = "general_chat"
-	IntentReset       = "reset"
+	IntentReminder           = "reminder"
+	IntentExpense            = "expense"
+	IntentSearch             = "search"
+	IntentGeneralChat        = "general_chat"
+	IntentReset              = "reset"
+	IntentReceiptCorrection  = "receipt_correction" // user mengoreksi hasil scan struk
 )
 
 // ChatMessage represents a single turn in the conversation.
@@ -46,6 +47,9 @@ type ChatRepository interface {
 // ChatUsecase defines business logic for general chat & orchestration.
 type ChatUsecase interface {
 	HandleMessage(ctx context.Context, userMessage string) (string, error)
+	// HandleImageMessage processes an image (e.g. receipt photo) sent via WhatsApp.
+	HandleImageMessage(ctx context.Context, imageData []byte, mimeType string, caption string) (string, error)
+	HandleAudioMessage(ctx context.Context, audioData []byte, mimeType string) (string, error)
 	ResetContext(ctx context.Context) error
 	GetHistory(ctx context.Context, limit int) ([]*ChatMessage, error)
 }
@@ -64,6 +68,10 @@ type LLMClient interface {
 	ParseReminders(ctx context.Context, message string) ([]ReminderParsed, error)
 	// ParseExpense extracts structured expense data from natural language.
 	ParseExpense(ctx context.Context, message string) (amount float64, category string, description string, err error)
+	// ParseReceiptFromImage uses vision AI to extract expense items from a receipt image.
+	ParseReceiptFromImage(ctx context.Context, imageData []byte, mimeType string) (*ReceiptParsed, error)
+	// ParseTranscription uses audio AI to extract expense items from an audio message.
+	ParseTranscription(ctx context.Context, audioData []byte, mimeType string) (string, error)
 }
 
 // ReminderParsed is the structured data extracted from a natural language reminder message.
@@ -71,6 +79,21 @@ type ReminderParsed struct {
 	Title       string  `json:"title"`
 	ScheduledAt string  `json:"scheduled_at"`
 	Recurrence  *string `json:"recurrence"`
+}
+
+// ReceiptItem is a single line item extracted from a receipt image.
+type ReceiptItem struct {
+	Description string  `json:"description"`
+	Amount      float64 `json:"amount"`
+	Category    string  `json:"category"`
+}
+
+// ReceiptParsed holds all items extracted from a receipt scan.
+type ReceiptParsed struct {
+	StoreName string        `json:"store_name"` // Nama toko/merchant
+	Items     []ReceiptItem `json:"items"`
+	Total     float64       `json:"total"`     // Total keseluruhan (bisa 0 jika tidak terbaca)
+	Currency  string        `json:"currency"`  // "IDR" default
 }
 
 // SearchClient defines the contract for web search providers.

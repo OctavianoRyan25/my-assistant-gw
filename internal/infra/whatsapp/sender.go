@@ -122,9 +122,14 @@ func (s *WhatsAppClient) RegisterMessageHandler(chatUC domain.ChatUsecase, allow
 		}
 
 		// Unwrap raw message (ephemeral, view-once, device-sent, etc.)
-		unwrapped := evt.UnwrapRaw()
-		if unwrapped != nil {
+		msgProto := evt.Message
+		if unwrapped := evt.UnwrapRaw(); unwrapped != nil {
 			evt = unwrapped
+			msgProto = unwrapped.Message
+		}
+
+		if msgProto == nil {
+			return
 		}
 
 		log.Info("📩 WhatsApp event diterima",
@@ -193,50 +198,21 @@ func (s *WhatsAppClient) RegisterMessageHandler(chatUC domain.ChatUsecase, allow
 			}
 		}
 
-		// 6. Ekstrak isi teks pesan
-		text := extractMessageText(evt.Message)
-		if strings.TrimSpace(text) == "" {
-			log.Info("pesan diterima tanpa teks yang bisa diproses (media/stiker)")
-			return
+		text := strings.TrimSpace(extractMessageText(msgProto))
+
+		switch {
+		case msgProto.GetImageMessage() != nil:
+			go s.handleImageAsync(evt, chatUC, msgProto.GetImageMessage(), log)
+
+		case msgProto.GetAudioMessage() != nil:
+			go s.handleAudioAsync(evt, chatUC, msgProto.GetAudioMessage(), log)
+
+		case text != "":
+			go s.handleTextMessageAsync(evt, chatUC, text, log)
+
+		default:
+			log.Info("pesan diabaikan: bukan gambar, audio, atau teks yang didukung")
 		}
-
-		log.Info("💬 Memproses pesan WhatsApp",
-			zap.String("from", evt.Info.Sender.User),
-			zap.String("message", text),
-		)
-
-		// 7. Tandai pesan sudah dibaca (centang biru) & kirim status 'sedang mengetik'
-		go func() {
-			_ = s.client.MarkRead(context.Background(), []types.MessageID{evt.Info.ID}, evt.Info.Timestamp, evt.Info.Chat, evt.Info.Sender)
-			_ = s.client.SendChatPresence(context.Background(), evt.Info.Chat, types.ChatPresenceComposing, types.ChatPresenceMediaText)
-		}()
-
-		// 8. Proses pesan lewat AI ChatUsecase (Intent router: reminder, expense, search, chat)
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-
-			reply, err := chatUC.HandleMessage(ctx, text)
-			// Hentikan status mengetik
-			_ = s.client.SendChatPresence(ctx, evt.Info.Chat, types.ChatPresencePaused, types.ChatPresenceMediaText)
-
-			if err != nil {
-				log.Error("gagal memproses pesan AI", zap.Error(err))
-				reply = "Waduh wir, ada kendala pas proses pesan kamu: " + err.Error()
-			}
-
-			if strings.TrimSpace(reply) == "" {
-				return
-			}
-
-			// 9. Kirim balasan ke chat asal
-			targetJID := evt.Info.Chat.String()
-			if err := s.SendMessage(ctx, targetJID, reply); err != nil {
-				log.Error("gagal mengirim balasan WhatsApp", zap.Error(err), zap.String("to", targetJID))
-			} else {
-				log.Info("✅ Berhasil mengirim balasan WhatsApp", zap.String("to", targetJID))
-			}
-		}()
 	})
 
 	log.Info("WhatsApp incoming message listener berhasil dipasang", zap.String("allowedUser", cleanAllowed))
@@ -303,4 +279,115 @@ func cleanNumber(n string) string {
 		res = "62" + res[1:]
 	}
 	return res
+}
+
+func (s *WhatsAppClient) handleImageAsync(evt *events.Message, chatUC domain.ChatUsecase, imgMsg *waE2E.ImageMessage, log *zap.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	_ = s.client.SendChatPresence(ctx, evt.Info.Chat, types.ChatPresenceComposing, types.ChatPresenceMediaText)
+	_ = s.client.MarkRead(ctx, []types.MessageID{evt.Info.ID}, evt.Info.Timestamp, evt.Info.Chat, evt.Info.Sender)
+
+	imageData, err := s.client.Download(ctx, imgMsg)
+	if err != nil {
+		log.Error("gagal download gambar WhatsApp", zap.Error(err))
+		_ = s.SendMessage(ctx, evt.Info.Chat.String(), "Waduh, gagal ngambil gambarnya wir 😅. Coba kirim ulang ya.")
+		return
+	}
+
+	mimeType := imgMsg.GetMimetype()
+	if mimeType == "" {
+		mimeType = "image/jpeg"
+	}
+	caption := imgMsg.GetCaption()
+
+	log.Info("🖼️ Memproses gambar WhatsApp",
+		zap.String("from", evt.Info.Sender.User),
+		zap.String("mimeType", mimeType),
+		zap.Int("bytes", len(imageData)),
+	)
+
+	reply, err := chatUC.HandleImageMessage(ctx, imageData, mimeType, caption)
+	_ = s.client.SendChatPresence(ctx, evt.Info.Chat, types.ChatPresencePaused, types.ChatPresenceMediaText)
+	if err != nil {
+		log.Error("gagal memproses gambar", zap.Error(err))
+		reply = "Waduh wir, ada error waktu analisa gambarnya 😅"
+	}
+	if strings.TrimSpace(reply) != "" {
+		if err := s.SendMessage(ctx, evt.Info.Chat.String(), reply); err != nil {
+			log.Error("gagal kirim balasan gambar", zap.Error(err))
+		}
+	}
+}
+
+func (s *WhatsAppClient) handleAudioAsync(evt *events.Message, chatUC domain.ChatUsecase, audioMsg *waE2E.AudioMessage, log *zap.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	_ = s.client.SendChatPresence(ctx, evt.Info.Chat, types.ChatPresenceComposing, types.ChatPresenceMediaText)
+	_ = s.client.MarkRead(ctx, []types.MessageID{evt.Info.ID}, evt.Info.Timestamp, evt.Info.Chat, evt.Info.Sender, types.ReceiptTypePlayed)
+
+	audioData, err := s.client.Download(ctx, audioMsg)
+	if err != nil {
+		log.Error("gagal download audio WhatsApp", zap.Error(err))
+		_ = s.SendMessage(ctx, evt.Info.Chat.String(), "Waduh, gagal ngambil audionya wir 😅. Coba kirim ulang ya.")
+		return
+	}
+
+	mimeType := audioMsg.GetMimetype()
+	if mimeType == "" {
+		mimeType = "audio/ogg"
+	}
+
+	log.Info("🔊 Memproses audio WhatsApp",
+		zap.String("from", evt.Info.Sender.User),
+		zap.String("mimeType", mimeType),
+		zap.Int("bytes", len(audioData)),
+	)
+	reply, err := chatUC.HandleAudioMessage(ctx, audioData, mimeType)
+	err = s.client.SendChatPresence(ctx, evt.Info.Chat, types.ChatPresencePaused, types.ChatPresenceMediaText)
+	if err != nil {
+		log.Error("gagal memproses audio", zap.Error(err))
+		reply = "Waduh wir, ada error waktu analisa audionya 😅"
+	}
+	if strings.TrimSpace(reply) != "" {
+		if err := s.SendMessage(ctx, evt.Info.Chat.String(), reply); err != nil {
+			log.Error("gagal kirim balasan audio", zap.Error(err))
+		}
+	}
+}
+
+func (s *WhatsAppClient) handleTextMessageAsync(evt *events.Message, chatUC domain.ChatUsecase, text string, log *zap.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	log.Info("💬 Memproses pesan WhatsApp",
+	zap.String("from", evt.Info.Sender.User),
+	zap.String("message", text),
+	)
+
+	// Tandai pesan sudah dibaca (centang biru) & kirim status 'sedang mengetik'
+	_ = s.client.MarkRead(ctx, []types.MessageID{evt.Info.ID}, evt.Info.Timestamp, evt.Info.Chat, evt.Info.Sender)
+	_ = s.client.SendChatPresence(ctx, evt.Info.Chat, types.ChatPresenceComposing, types.ChatPresenceMediaText)
+
+	reply, err := chatUC.HandleMessage(ctx, text)
+	// Hentikan status mengetik
+	_ = s.client.SendChatPresence(ctx, evt.Info.Chat, types.ChatPresencePaused, types.ChatPresenceMediaText)
+
+	if err != nil {
+		log.Error("gagal memproses pesan AI", zap.Error(err))
+		reply = "Waduh wok, ada kendala pas proses pesan kamu: " + err.Error()
+	}
+
+	if strings.TrimSpace(reply) == "" {
+		return
+	}
+
+	// 9. Kirim balasan ke chat asal
+	targetJID := evt.Info.Chat.String()
+	if err := s.SendMessage(ctx, targetJID, reply); err != nil {
+		log.Error("gagal mengirim balasan WhatsApp", zap.Error(err), zap.String("to", targetJID))
+	} else {
+		log.Info("✅ Berhasil mengirim balasan WhatsApp", zap.String("to", targetJID))
+	}
 }

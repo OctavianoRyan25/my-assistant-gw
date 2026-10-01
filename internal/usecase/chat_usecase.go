@@ -17,6 +17,8 @@ const (
 	maxSearchResults = 5
 )
 
+const receiptStateKey = "self" // single-user assistant: always same key
+
 type chatUsecase struct {
 	chatRepo     domain.ChatRepository
 	llm          domain.LLMClient
@@ -25,6 +27,7 @@ type chatUsecase struct {
 	expenseUC    domain.ExpenseUsecase
 	logger       *zap.Logger
 	timezone     *time.Location
+	receiptStore *receiptStateStore // pending receipt awaiting confirmation
 }
 
 // NewChatUsecase creates the orchestrating chat usecase.
@@ -45,12 +48,27 @@ func NewChatUsecase(
 		expenseUC:    expenseUC,
 		logger:       logger,
 		timezone:     timezone,
+		receiptStore: newReceiptStateStore(),
 	}
 }
 
-// HandleMessage is the main entry point for all incoming messages.
+// HandleMessage is the main entry point for all incoming text messages.
 // It classifies intent, routes to the appropriate handler, and returns the reply.
 func (u *chatUsecase) HandleMessage(ctx context.Context, userMessage string) (string, error) {
+	// 0. Check if there's a pending receipt waiting for confirmation/correction
+	if pending, ok := u.receiptStore.get(receiptStateKey); ok {
+		reply, handled := u.handleReceiptReply(ctx, userMessage, pending)
+		if handled {
+			if err := u.saveMessage(ctx, domain.RoleUser, userMessage); err != nil {
+				u.logger.Warn("failed to save user message", zap.Error(err))
+			}
+			if err := u.saveMessage(ctx, domain.RoleAssistant, reply); err != nil {
+				u.logger.Warn("failed to save assistant message", zap.Error(err))
+			}
+			return reply, nil
+		}
+	}
+
 	// 1. Save user message to history
 	if err := u.saveMessage(ctx, domain.RoleUser, userMessage); err != nil {
 		u.logger.Warn("failed to save user message", zap.Error(err))
@@ -90,6 +108,180 @@ func (u *chatUsecase) HandleMessage(ctx context.Context, userMessage string) (st
 	}
 
 	return reply, nil
+}
+
+// HandleImageMessage processes an image sent via WhatsApp (e.g. a receipt photo).
+func (u *chatUsecase) HandleImageMessage(ctx context.Context, imageData []byte, mimeType string, caption string) (string, error) {
+	u.logger.Info("receipt image received", zap.String("mimeType", mimeType), zap.Int("bytes", len(imageData)))
+
+	receipt, err := u.llm.ParseReceiptFromImage(ctx, imageData, mimeType)
+	if err != nil {
+		u.logger.Error("failed to parse receipt image", zap.Error(err))
+		return "Waduh, gagal baca struknya nih wir 😅. Coba kirim ulang dengan foto yang lebih jelas ya.", nil
+	}
+
+	if receipt == nil || len(receipt.Items) == 0 {
+		return "Hmm, kayaknya ini bukan struk deh wir, atau tulisannya kurang jelas. Coba foto ulang yang lebih terang ya 📸", nil
+	}
+
+	// Store pending receipt for confirmation
+	u.receiptStore.set(receiptStateKey, receipt)
+
+	u.logger.Info("receipt parsed, awaiting confirmation",
+		zap.String("store", receipt.StoreName),
+		zap.Int("items", len(receipt.Items)),
+		zap.Float64("total", receipt.Total),
+	)
+
+	return FormatReceiptPreview(receipt), nil
+}
+
+// HandleAudioMessage processes an audio message sent via WhatsApp (e.g. a voice note).
+func (u *chatUsecase) HandleAudioMessage(ctx context.Context, audioData []byte, mimeType string) (string, error) {
+	u.logger.Info("audio message received", zap.String("mimeType", mimeType), zap.Int("bytes", len(audioData)))
+
+	res, err := u.llm.ParseTranscription(ctx, audioData, mimeType)
+	if err != nil {
+		return "", err
+	}
+
+	return res, nil
+}
+
+// handleReceiptReply handles user replies when a pending receipt is awaiting confirmation.
+// Returns (reply, true) if the message was handled as a receipt command, (_, false) otherwise.
+func (u *chatUsecase) handleReceiptReply(ctx context.Context, msg string, receipt *domain.ReceiptParsed) (string, bool) {
+	lower := strings.ToLower(strings.TrimSpace(msg))
+
+	// Cancel
+	if lower == "batal" || lower == "cancel" || lower == "ga jadi" {
+		u.receiptStore.clear(receiptStateKey)
+		return "Oke, scan struk dibatalin wir. 👌", true
+	}
+
+	// Confirm & save all
+	confirmKeywords := []string{"ya", "yes", "iya", "ok", "oke", "simpan", "save", "lanjut", "confirm", "benar", "bener"}
+	for _, kw := range confirmKeywords {
+		if lower == kw {
+			return u.saveReceiptItems(ctx, receipt)
+		}
+	}
+
+	// Koreksi: "koreksi 1 nama=Nasi Goreng jumlah=25000 kategori=makan"
+	if strings.HasPrefix(lower, "koreksi") {
+		return u.handleReceiptCorrection(msg, receipt)
+	}
+
+	// Hapus item: "hapus 2"
+	if strings.HasPrefix(lower, "hapus ") {
+		return u.handleReceiptDelete(msg, receipt)
+	}
+
+	// Not a recognized receipt command — let normal flow handle it
+	return "", false
+}
+
+// handleReceiptCorrection parses and applies user correction to a pending receipt item.
+// Syntax: "koreksi <nomor> [nama=...] [jumlah=...] [kategori=...]"
+func (u *chatUsecase) handleReceiptCorrection(msg string, receipt *domain.ReceiptParsed) (string, bool) {
+	tokens := strings.Fields(msg)
+	if len(tokens) < 2 {
+		return "Format koreksi: _koreksi <nomor item> [nama=...] [jumlah=...] [kategori=...]_\nContoh: _koreksi 1 nama=Nasi Goreng jumlah=25000 kategori=makan_", true
+	}
+
+	var idx int
+	if _, err := fmt.Sscanf(tokens[1], "%d", &idx); err != nil || idx < 1 || idx > len(receipt.Items) {
+		return fmt.Sprintf("Nomor item tidak valid wir. Pilih antara 1-%d.", len(receipt.Items)), true
+	}
+	idx-- // 0-indexed
+
+	for _, tok := range tokens[2:] {
+		parts := strings.SplitN(tok, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(parts[0]))
+		val := strings.TrimSpace(parts[1])
+		switch key {
+		case "nama", "name", "deskripsi", "desc":
+			receipt.Items[idx].Description = val
+		case "jumlah", "harga", "amount", "price":
+			var amount float64
+			if _, err := fmt.Sscanf(val, "%f", &amount); err == nil {
+				receipt.Items[idx].Amount = amount
+			}
+		case "kategori", "cat", "category":
+			receipt.Items[idx].Category = val
+		}
+	}
+
+	// Recalculate total
+	total := 0.0
+	for _, item := range receipt.Items {
+		total += item.Amount
+	}
+	receipt.Total = total
+
+	// Update the stored pending receipt
+	u.receiptStore.set(receiptStateKey, receipt)
+
+	return "✏️ Diupdate wir! Ini struk terbaru:\n\n" + FormatReceiptPreview(receipt), true
+}
+
+// handleReceiptDelete removes an item from the pending receipt.
+// Syntax: "hapus <nomor>"
+func (u *chatUsecase) handleReceiptDelete(msg string, receipt *domain.ReceiptParsed) (string, bool) {
+	tokens := strings.Fields(msg)
+	if len(tokens) < 2 {
+		return "Format hapus: _hapus <nomor item>_\nContoh: _hapus 2_", true
+	}
+
+	var idx int
+	if _, err := fmt.Sscanf(tokens[1], "%d", &idx); err != nil || idx < 1 || idx > len(receipt.Items) {
+		return fmt.Sprintf("Nomor item tidak valid wir. Pilih antara 1-%d.", len(receipt.Items)), true
+	}
+	idx-- // 0-indexed
+
+	removed := receipt.Items[idx]
+	receipt.Items = append(receipt.Items[:idx], receipt.Items[idx+1:]...)
+
+	// Recalculate total
+	total := 0.0
+	for _, item := range receipt.Items {
+		total += item.Amount
+	}
+	receipt.Total = total
+	u.receiptStore.set(receiptStateKey, receipt)
+
+	if len(receipt.Items) == 0 {
+		u.receiptStore.clear(receiptStateKey)
+		return fmt.Sprintf("🗑️ Item *%s* dihapus. Struk kosong wir, scan dibatalin deh.", removed.Description), true
+	}
+
+	return fmt.Sprintf("🗑️ Item *%s* dihapus wir!\n\nSisa struk:\n", removed.Description) + FormatReceiptPreview(receipt), true
+}
+
+// saveReceiptItems records all pending receipt items as expenses.
+func (u *chatUsecase) saveReceiptItems(ctx context.Context, receipt *domain.ReceiptParsed) (string, bool) {
+	var saved []domain.ReceiptItem
+	now := time.Now().In(u.timezone)
+
+	for _, item := range receipt.Items {
+		_, err := u.expenseUC.RecordExpense(ctx, item.Amount, item.Category, item.Description, now)
+		if err != nil {
+			u.logger.Error("failed to save receipt item", zap.String("item", item.Description), zap.Error(err))
+			continue
+		}
+		saved = append(saved, item)
+	}
+
+	u.receiptStore.clear(receiptStateKey)
+
+	if len(saved) == 0 {
+		return "Gagal menyimpan semua item wir 😭. Coba lagi ya!", true
+	}
+
+	return FormatReceiptSaved(saved, receipt.StoreName), true
 }
 
 // handleReminder parses and processes reminder-related messages.
