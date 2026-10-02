@@ -26,10 +26,12 @@ import (
 type WhatsAppClient struct {
 	client     *whatsmeow.Client
 	sentMsgIDs sync.Map // cache of recently sent message IDs to prevent reply loops
+	log        *zap.Logger
+	allowedPhone string
 }
 
 // NewWhatsAppClient initializes the whatsmeow SQLite store and connects to WhatsApp.
-func NewWhatsAppClient(ctx context.Context) (*WhatsAppClient, error) {
+func NewWhatsAppClient(ctx context.Context, log *zap.Logger, allowedPhone string) (*WhatsAppClient, error) {
 	dbLog := waLog.Stdout("Database", "INFO", false)
 	container, err := sqlstore.New(ctx, "sqlite", "file:whatsapp.db?_pragma=foreign_keys(1)", dbLog)
 	if err != nil {
@@ -64,7 +66,9 @@ func NewWhatsAppClient(ctx context.Context) (*WhatsAppClient, error) {
 	}
 
 	wac := &WhatsAppClient{
-		client: client,
+		client:       client,
+		log:          log,
+		allowedPhone: allowedPhone,
 	}
 
 	// Background routine to purge sentMsgIDs older than 10 minutes
@@ -112,8 +116,8 @@ func (s *WhatsAppClient) SendMessage(ctx context.Context, to string, text string
 
 // RegisterMessageHandler listens for incoming WhatsApp messages and delegates them to ChatUsecase.
 // It filters incoming messages to only process messages from the authorized user (PRD: single-user).
-func (s *WhatsAppClient) RegisterMessageHandler(chatUC domain.ChatUsecase, allowedPhone string, log *zap.Logger) {
-	cleanAllowed := cleanNumber(allowedPhone)
+func (s *WhatsAppClient) RegisterMessageHandler(chatUC domain.ChatUsecase) {
+	cleanAllowed := cleanNumber(s.allowedPhone)
 
 	s.client.AddEventHandler(func(rawEvt interface{}) {
 		evt, ok := rawEvt.(*events.Message)
@@ -132,7 +136,7 @@ func (s *WhatsAppClient) RegisterMessageHandler(chatUC domain.ChatUsecase, allow
 			return
 		}
 
-		log.Info("📩 WhatsApp event diterima",
+		s.log.Info("📩 WhatsApp event diterima",
 			zap.String("sender", evt.Info.Sender.String()),
 			zap.String("chat", evt.Info.Chat.String()),
 			zap.Bool("isFromMe", evt.Info.IsFromMe),
@@ -141,13 +145,13 @@ func (s *WhatsAppClient) RegisterMessageHandler(chatUC domain.ChatUsecase, allow
 
 		// 1. Abaikan pesan lama jika timestamp lebih dari 10 menit
 		if time.Since(evt.Info.Timestamp) > 10*time.Minute {
-			log.Info("mengabaikan pesan kadaluarsa (>10m)", zap.Time("timestamp", evt.Info.Timestamp))
+			s.log.Info("mengabaikan pesan kadaluarsa (>10m)", zap.Time("timestamp", evt.Info.Timestamp))
 			return
 		}
 
 		// 2. Abaikan pesan grup (V1 adalah personal assistant single-user)
 		if evt.Info.IsGroup {
-			log.Debug("mengabaikan pesan dari grup")
+			s.log.Debug("mengabaikan pesan dari grup")
 			return
 		}
 
@@ -158,7 +162,7 @@ func (s *WhatsAppClient) RegisterMessageHandler(chatUC domain.ChatUsecase, allow
 
 		// 4. Abaikan pesan yang baru saja dikirim oleh bot kita sendiri
 		if _, isOwn := s.sentMsgIDs.Load(evt.Info.ID); isOwn {
-			log.Debug("mengabaikan pesan balasan bot sendiri", zap.String("id", string(evt.Info.ID)))
+			s.log.Debug("mengabaikan pesan balasan bot sendiri", zap.String("id", string(evt.Info.ID)))
 			return
 		}
 
@@ -189,7 +193,7 @@ func (s *WhatsAppClient) RegisterMessageHandler(chatUC domain.ChatUsecase, allow
 			}
 
 			if !isAllowed {
-				log.Info("⚠️ Pesan dari nomor tidak dikenal diabaikan",
+				s.log.Info("⚠️ Pesan dari nomor tidak dikenal diabaikan",
 					zap.String("senderUser", senderUser),
 					zap.String("chatUser", chatUser),
 					zap.String("allowedUser", cleanAllowed),
@@ -212,23 +216,23 @@ func (s *WhatsAppClient) RegisterMessageHandler(chatUC domain.ChatUsecase, allow
 
 		switch {
 		case isOpening:
-			go s.handleMenu(evt, log)
+			go s.handleMenu(evt)
 
 		case msgProto.GetImageMessage() != nil:
-			go s.handleImageAsync(evt, chatUC, msgProto.GetImageMessage(), log)
+			go s.handleImageAsync(evt, chatUC, msgProto.GetImageMessage())
 
 		case msgProto.GetAudioMessage() != nil:
-			go s.handleAudioAsync(evt, chatUC, msgProto.GetAudioMessage(), log)
+			go s.handleAudioAsync(evt, chatUC, msgProto.GetAudioMessage())
 
 		case text != "":
-			go s.handleTextMessageAsync(evt, chatUC, text, log)
+			go s.handleTextMessageAsync(evt, chatUC, text)
 			
 		default:
-			log.Info("pesan diabaikan: bukan gambar, audio, atau teks yang didukung")
+			s.log.Info("pesan diabaikan: bukan gambar, audio, atau teks yang didukung")
 		}
 	})
 
-	log.Info("WhatsApp incoming message listener berhasil dipasang", zap.String("allowedUser", cleanAllowed))
+	s.log.Info("WhatsApp incoming message listener berhasil dipasang", zap.String("allowedUser", cleanAllowed))
 }
 
 // Close disconnects the whatsmeow client.
@@ -294,7 +298,7 @@ func cleanNumber(n string) string {
 	return res
 }
 
-func (s *WhatsAppClient) handleImageAsync(evt *events.Message, chatUC domain.ChatUsecase, imgMsg *waE2E.ImageMessage, log *zap.Logger) {
+func (s *WhatsAppClient) handleImageAsync(evt *events.Message, chatUC domain.ChatUsecase, imgMsg *waE2E.ImageMessage) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -303,7 +307,7 @@ func (s *WhatsAppClient) handleImageAsync(evt *events.Message, chatUC domain.Cha
 
 	imageData, err := s.client.Download(ctx, imgMsg)
 	if err != nil {
-		log.Error("gagal download gambar WhatsApp", zap.Error(err))
+		s.log.Error("gagal download gambar WhatsApp", zap.Error(err))
 		_ = s.SendMessage(ctx, evt.Info.Chat.String(), "Waduh, gagal ngambil gambarnya wir 😅. Coba kirim ulang ya.")
 		return
 	}
@@ -314,7 +318,7 @@ func (s *WhatsAppClient) handleImageAsync(evt *events.Message, chatUC domain.Cha
 	}
 	caption := imgMsg.GetCaption()
 
-	log.Info("🖼️ Memproses gambar WhatsApp",
+	s.log.Info("🖼️ Memproses gambar WhatsApp",
 		zap.String("from", evt.Info.Sender.User),
 		zap.String("mimeType", mimeType),
 		zap.Int("bytes", len(imageData)),
@@ -323,17 +327,17 @@ func (s *WhatsAppClient) handleImageAsync(evt *events.Message, chatUC domain.Cha
 	reply, err := chatUC.HandleImageMessage(ctx, imageData, mimeType, caption)
 	_ = s.client.SendChatPresence(ctx, evt.Info.Chat, types.ChatPresencePaused, types.ChatPresenceMediaText)
 	if err != nil {
-		log.Error("gagal memproses gambar", zap.Error(err))
+		s.log.Error("gagal memproses gambar", zap.Error(err))
 		reply = "Waduh wir, ada error waktu analisa gambarnya 😅"
 	}
 	if strings.TrimSpace(reply) != "" {
 		if err := s.SendMessage(ctx, evt.Info.Chat.String(), reply); err != nil {
-			log.Error("gagal kirim balasan gambar", zap.Error(err))
+			s.log.Error("gagal kirim balasan gambar", zap.Error(err))
 		}
 	}
 }
 
-func (s *WhatsAppClient) handleAudioAsync(evt *events.Message, chatUC domain.ChatUsecase, audioMsg *waE2E.AudioMessage, log *zap.Logger) {
+func (s *WhatsAppClient) handleAudioAsync(evt *events.Message, chatUC domain.ChatUsecase, audioMsg *waE2E.AudioMessage) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -342,7 +346,7 @@ func (s *WhatsAppClient) handleAudioAsync(evt *events.Message, chatUC domain.Cha
 
 	audioData, err := s.client.Download(ctx, audioMsg)
 	if err != nil {
-		log.Error("gagal download audio WhatsApp", zap.Error(err))
+		s.log.Error("gagal download audio WhatsApp", zap.Error(err))
 		_ = s.SendMessage(ctx, evt.Info.Chat.String(), "Waduh, gagal ngambil audionya wir 😅. Coba kirim ulang ya.")
 		return
 	}
@@ -352,7 +356,7 @@ func (s *WhatsAppClient) handleAudioAsync(evt *events.Message, chatUC domain.Cha
 		mimeType = "audio/ogg"
 	}
 
-	log.Info("🔊 Memproses audio WhatsApp",
+	s.log.Info("🔊 Memproses audio WhatsApp",
 		zap.String("from", evt.Info.Sender.User),
 		zap.String("mimeType", mimeType),
 		zap.Int("bytes", len(audioData)),
@@ -360,23 +364,23 @@ func (s *WhatsAppClient) handleAudioAsync(evt *events.Message, chatUC domain.Cha
 	reply, err := chatUC.HandleAudioMessage(ctx, audioData, mimeType)
 	err = s.client.SendChatPresence(ctx, evt.Info.Chat, types.ChatPresencePaused, types.ChatPresenceMediaText)
 	if err != nil {
-		log.Error("gagal memproses audio", zap.Error(err))
+		s.log.Error("gagal memproses audio", zap.Error(err))
 		reply = "Waduh wir, ada error waktu analisa audionya 😅"
 	}
 	if strings.TrimSpace(reply) != "" {
 		if err := s.SendMessage(ctx, evt.Info.Chat.String(), reply); err != nil {
-			log.Error("gagal kirim balasan audio", zap.Error(err))
+			s.log.Error("gagal kirim balasan audio", zap.Error(err))
 		}
 	}
 }
 
-func (s *WhatsAppClient) handleTextMessageAsync(evt *events.Message, chatUC domain.ChatUsecase, text string, log *zap.Logger) {
+func (s *WhatsAppClient) handleTextMessageAsync(evt *events.Message, chatUC domain.ChatUsecase, text string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	log.Info("💬 Memproses pesan WhatsApp",
-	zap.String("from", evt.Info.Sender.User),
-	zap.String("message", text),
+	s.log.Info("💬 Memproses pesan WhatsApp",
+		zap.String("from", evt.Info.Sender.User),
+		zap.String("message", text),
 	)
 
 	// Tandai pesan sudah dibaca (centang biru) & kirim status 'sedang mengetik'
@@ -388,7 +392,7 @@ func (s *WhatsAppClient) handleTextMessageAsync(evt *events.Message, chatUC doma
 	_ = s.client.SendChatPresence(ctx, evt.Info.Chat, types.ChatPresencePaused, types.ChatPresenceMediaText)
 
 	if err != nil {
-		log.Error("gagal memproses pesan AI", zap.Error(err))
+		s.log.Error("gagal memproses pesan AI", zap.Error(err))
 		reply = "Waduh wok, ada kendala pas proses pesan kamu: " + err.Error()
 	}
 
@@ -399,19 +403,19 @@ func (s *WhatsAppClient) handleTextMessageAsync(evt *events.Message, chatUC doma
 	// 9. Kirim balasan ke chat asal
 	targetJID := evt.Info.Chat.String()
 	if err := s.SendMessage(ctx, targetJID, reply); err != nil {
-		log.Error("gagal mengirim balasan WhatsApp", zap.Error(err), zap.String("to", targetJID))
+		s.log.Error("gagal mengirim balasan WhatsApp", zap.Error(err), zap.String("to", targetJID))
 	} else {
-		log.Info("✅ Berhasil mengirim balasan WhatsApp", zap.String("to", targetJID))
+		s.log.Info("✅ Berhasil mengirim balasan WhatsApp", zap.String("to", targetJID))
 	}
 }
 
-func (s *WhatsAppClient) handleMenu(evt *events.Message, log *zap.Logger) {
+func (s *WhatsAppClient) handleMenu(evt *events.Message) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	log.Info("💬 Memproses pesan WhatsApp",
-	zap.String("from", evt.Info.Sender.User),
-	zap.String("message Menu", "Menu"),
+	s.log.Info("💬 Memproses pesan WhatsApp",
+		zap.String("from", evt.Info.Sender.User),
+		zap.String("message Menu", "Menu"),
 	)
 
 	// Tandai pesan sudah dibaca (centang biru) & kirim status 'sedang mengetik'
@@ -432,8 +436,8 @@ func (s *WhatsAppClient) handleMenu(evt *events.Message, log *zap.Logger) {
 	// 9. Kirim balasan ke chat asal
 	targetJID := evt.Info.Chat.String()
 	if err := s.SendMessage(ctx, targetJID, sb.String()); err != nil {
-		log.Error("gagal mengirim balasan WhatsApp", zap.Error(err), zap.String("to", targetJID))
+		s.log.Error("gagal mengirim balasan WhatsApp", zap.Error(err), zap.String("to", targetJID))
 	} else {
-		log.Info("✅ Berhasil mengirim balasan WhatsApp", zap.String("to", targetJID))
+		s.log.Info("✅ Berhasil mengirim balasan WhatsApp", zap.String("to", targetJID))
 	}
 }

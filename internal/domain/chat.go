@@ -60,6 +60,8 @@ type LLMClient interface {
 	Chat(ctx context.Context, messages []ChatMessage) (string, error)
 	// ClassifyIntent uses a lightweight call to determine user intent.
 	ClassifyIntent(ctx context.Context, message string) (*IntentResult, error)
+	// ClasifyAudioIntent use a lightweight call to determine user intent based on audio.
+	ClassifyAudioIntent(ctx context.Context, audioData []byte, mimeType string) (*IntentResult, error)
 	// ParseReminder extracts a single reminder from natural language.
 	// Kept for backward compatibility; internally delegates to ParseReminders.
 	ParseReminder(ctx context.Context, message string) (title string, scheduledAt string, recurrence *string, err error)
@@ -71,7 +73,7 @@ type LLMClient interface {
 	// ParseReceiptFromImage uses vision AI to extract expense items from a receipt image.
 	ParseReceiptFromImage(ctx context.Context, imageData []byte, mimeType string) (*ReceiptParsed, error)
 	// ParseTranscription uses audio AI to extract expense items from an audio message.
-	ParseTranscription(ctx context.Context, audioData []byte, mimeType string) (string, error)
+	// ParseTranscription(ctx context.Context, audioData []byte, mimeType string) (string, error)
 }
 
 // ReminderParsed is the structured data extracted from a natural language reminder message.

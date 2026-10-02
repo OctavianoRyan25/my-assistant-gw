@@ -140,12 +140,45 @@ func (u *chatUsecase) HandleImageMessage(ctx context.Context, imageData []byte, 
 func (u *chatUsecase) HandleAudioMessage(ctx context.Context, audioData []byte, mimeType string) (string, error) {
 	u.logger.Info("audio message received", zap.String("mimeType", mimeType), zap.Int("bytes", len(audioData)))
 
-	res, err := u.llm.ParseTranscription(ctx, audioData, mimeType)
+	// Clasify audio intent
+	intent, err := u.llm.ClassifyAudioIntent(ctx, audioData, mimeType)
 	if err != nil {
-		return "", err
+		u.logger.Error("intent classification failed, falling back to general chat", zap.Error(err))
+		intent = &domain.IntentResult{Intent: domain.IntentGeneralChat, Confidence: 0.5}
+	}
+	u.logger.Info("intent classified", zap.String("intent", intent.Intent), zap.Float64("confidence", intent.Confidence))
+
+	// 3. Route to handler
+	var reply string
+	switch intent.Intent {
+	case domain.IntentReminder:
+		reply, err = u.handleReminder(ctx, intent.RawMessage)
+	case domain.IntentExpense:
+		reply, err = u.handleExpense(ctx, intent.RawMessage)
+	case domain.IntentSearch:
+		reply, err = u.handleSearch(ctx, intent.RawMessage)
+	case domain.IntentReset:
+		reply, err = u.handleReset(ctx)
+	default:
+		reply, err = u.handleGeneralChat(ctx, intent.RawMessage)
 	}
 
-	return res, nil
+	if err != nil {
+		u.logger.Error("handler error", zap.String("intent", intent.Intent), zap.Error(err))
+		reply = "Gw ga paham bahasa lu Jawa"
+	}
+
+	// Save user message to history
+	if err := u.saveMessage(ctx, domain.RoleUser, intent.RawMessage); err != nil {
+		u.logger.Warn("failed to save user message", zap.Error(err))
+	}
+
+	// Save assistant reply to history
+	if err := u.saveMessage(ctx, domain.RoleAssistant, reply); err != nil {
+		u.logger.Warn("failed to save assistant message", zap.Error(err))
+	}
+
+	return reply, nil
 }
 
 // handleReceiptReply handles user replies when a pending receipt is awaiting confirmation.
@@ -433,7 +466,7 @@ func (u *chatUsecase) handleGeneralChat(ctx context.Context, message string) (st
 	for _, h := range history {
 		messages = append(messages, *h)
 	}
-	// messages = append(messages, domain.ChatMessage{Role: domain.RoleUser, Message: message})
+	messages = append(messages, domain.ChatMessage{Role: domain.RoleUser, Message: message})
 
 	return u.llm.Chat(ctx, messages)
 }
@@ -457,7 +490,11 @@ func (u *chatUsecase) GetHistory(ctx context.Context, limit int) ([]*domain.Chat
 }
 
 // saveMessage persists a chat message to the repository.
+// It skips saving if message is empty to avoid sending blank parts to the LLM.
 func (u *chatUsecase) saveMessage(ctx context.Context, role, message string) error {
+	if strings.TrimSpace(message) == "" {
+		return nil
+	}
 	return u.chatRepo.SaveMessage(ctx, &domain.ChatMessage{
 		Role:      role,
 		Message:   message,

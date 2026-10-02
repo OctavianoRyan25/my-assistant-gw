@@ -72,7 +72,7 @@ func main() {
 	}
 	searchClient := search.NewDuckDuckGoClient()
 	// Use background context for WhatsApp client init (signal context not created yet)
-	waSender, err := whatsapp.NewWhatsAppClient(context.Background())
+	waSender, err := whatsapp.NewWhatsAppClient(context.Background(), log, cfg.WAPhoneNumber)
 	if err != nil {
 		log.Fatal("error loading whatsapp", zap.Error(err))
 	}
@@ -84,7 +84,7 @@ func main() {
 	chatUC     := usecase.NewChatUsecase(chatRepo, llmClient, searchClient, reminderUC, expenseUC, log, tz)
 
 	// ── 8. Register WhatsApp message handler ──────────────────────────────────
-	waSender.RegisterMessageHandler(chatUC, cfg.WAPhoneNumber, log)
+	waSender.RegisterMessageHandler(chatUC)
 
 	// ── 9. Scheduler ─────────────────────────────────────────────────────────
 	sched := scheduler.NewScheduler(reminderUC, expenseUC, log, tz)

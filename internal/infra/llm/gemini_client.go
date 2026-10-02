@@ -104,6 +104,9 @@ Waktu server: ` + time.Now().Format("Monday, 02 January 2006 15:04 WIB")
 
 	contents := make([]geminiContent, 0, len(messages))
 	for _, msg := range messages {
+		if strings.TrimSpace(msg.Message) == "" {
+			continue // skip pesan kosong agar Gemini tidak error INVALID_ARGUMENT
+		}
 		role := "user"
 		if msg.Role == domain.RoleAssistant {
 			role = "model"
@@ -479,20 +482,29 @@ Aturan:
 	return &parsed, nil
 }
 
-func (c *geminiClient) ParseTranscription(ctx context.Context, audioData []byte, mimeType string) (string, error) {
+func (c *geminiClient) ClassifyAudioIntent(ctx context.Context, audioData []byte, mimeType string) (*domain.IntentResult, error) {
 	// WhatsApp voice notes umumnya bertipe audio/ogg codecs=opus
 	if mimeType == "" {
 		mimeType = "audio/ogg"
 	}
 
-systemPrompt := `Kamu adalah asisten pribadi yang santai kayak temen ngobrol sendiri, bukan asisten formal.
-Tugasmu adalah mendengarkan rekaman pesan suara pengguna di WhatsApp dan langsung menjawab, menanggapi, atau membantu apa yang diminta/dibicarakan.
+	systemPrompt := `Kamu adalah classifier intent. Dengarkan rekaman pesan suara pengguna, transkrip isi ucapannya, lalu analisa intent-nya.
+Kembalikan HANYA JSON valid dengan format:
+{"intent": "<intent>", "confidence": <0.0-1.0>, "raw_message": "<transkrip isi ucapan pengguna>"}
 
-GAYA KOMUNIKASI:
-- Gunakan bahasa Indonesia santai, akrab (seperti gaya chat WhatsApp antar teman, gunakan kata seperti 'wir', 'nih', 'ya').
-- Jawab secara ringkas, to the point, dan solutif.
-- JANGAN mengulang atau menuliskan kembali isi perkataan pengguna (jangan buat transkrip), langsung berikan respon atau jawabannya.
-- Jika rekaman hening, hanya desah angin/noise, atau tidak jelas sama sekali, jawab santai: "Ora krungu njir, suaramu alon."`
+Intent yang tersedia:
+- "reminder": user ingin membuat, melihat, mengubah, atau membatalkan reminder/jadwal
+- "expense": user ingin mencatat pengeluaran, atau menanyakan laporan pengeluaran
+- "search": user menanyakan informasi terkini, berita, atau hal yang butuh info real-time
+- "reset": user ingin mereset/menghapus riwayat percakapan
+- "general_chat": percakapan umum, brainstorming, diskusi, atau hal lainnya
+
+Contoh:
+- (audio: "ingatkan aku besok jam 8 meeting") → {"intent": "reminder", "confidence": 0.98, "raw_message": "ingatkan aku besok jam 8 meeting"}
+- (audio: "keluar 50rb buat makan") → {"intent": "expense", "confidence": 0.97, "raw_message": "keluar 50rb buat makan"}
+- (audio: hening/noise/tidak jelas) → {"intent": "general_chat", "confidence": 0.3, "raw_message": "Ora krungu njir, suaramu alon."}
+
+PENTING: raw_message harus transkrip asli ucapan pengguna (bahasa Indonesia, apa adanya), bukan jawaban atau respon kamu. Kalau audio tidak jelas/hening, isi raw_message dengan pesan "Ora krungu njir, suaramu alon." dan set intent ke "general_chat".`
 
 	b64 := base64.StdEncoding.EncodeToString(audioData)
 
@@ -505,21 +517,27 @@ GAYA KOMUNIKASI:
 				Role: "user",
 				Parts: []geminiPart{
 					{InlineData: &geminiInlineData{MimeType: mimeType, Data: b64}},
-					{Text: "Dengarkan pesan suaraku ini dan tanggapi langsung pembicaraanku ya."},
+					{Text: "Dengarkan pesan suara ini, transkrip, lalu klasifikasikan intent-nya."},
 				},
 			},
 		},
 		GenerationConfig: &geminiGenerationConfig{
-			ResponseMimeType: "text/plain",
+			ResponseMimeType: "application/json",
 		},
 	}
 
 	resp, err := c.callAPI(ctx, reqBody)
 	if err != nil {
-		return "", fmt.Errorf("gemini audio transcription: %w", err)
+		return nil, err
 	}
 
-	return resp, nil
+	resp = cleanJSONResponse(resp)
+
+	var result domain.IntentResult
+	if err := json.Unmarshal([]byte(resp), &result); err != nil {
+		return &domain.IntentResult{Intent: domain.IntentGeneralChat, Confidence: 0.5, RawMessage: "Error parsing audio"}, nil
+	}
+	return &result, nil
 }
 
 // callAPI sends a request to Google Gemini API and returns the generated text.

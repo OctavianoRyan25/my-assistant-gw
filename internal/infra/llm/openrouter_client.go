@@ -291,6 +291,6 @@ func (c *openRouterClient) ParseReceiptFromImage(_ context.Context, _ []byte, _ 
 	return nil, fmt.Errorf("fitur scan struk tidak tersedia saat menggunakan OpenRouter. Gunakan provider Gemini (LLM_PROVIDER=gemini) untuk mengaktifkan fitur ini")
 }
 
-func (c *openRouterClient) ParseTranscription(_ context.Context, _ []byte, _ string) (string, error) {
-	return "", fmt.Errorf("fitur voice note tidak tersedia saat menggunakan OpenRouter. Gunakan provider Gemini (LLM_PROVIDER=gemini) untuk mengaktifkan fitur ini")
+func (c *openRouterClient) ClassifyAudioIntent(_ context.Context, _ []byte, _ string) (*domain.IntentResult, error) {
+	return nil, fmt.Errorf("fitur voice note tidak tersedia saat menggunakan OpenRouter. Gunakan provider Gemini (LLM_PROVIDER=gemini) untuk mengaktifkan fitur ini")
 }
