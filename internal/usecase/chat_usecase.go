@@ -193,7 +193,7 @@ func (u *chatUsecase) handleReceiptReply(ctx context.Context, msg string, receip
 	}
 
 	// Confirm & save all
-	confirmKeywords := []string{"ya", "yes", "iya", "ok", "oke", "simpan", "save", "lanjut", "confirm", "benar", "bener"}
+	confirmKeywords := []string{"ya", "yes", "iya", "ok", "oke", "simpan", "save", "lanjut", "confirm", "benar", "bener", "josjis", "wis", "wes"}
 	for _, kw := range confirmKeywords {
 		if lower == kw {
 			return u.saveReceiptItems(ctx, receipt)
@@ -466,7 +466,7 @@ func (u *chatUsecase) handleGeneralChat(ctx context.Context, message string) (st
 	for _, h := range history {
 		messages = append(messages, *h)
 	}
-	messages = append(messages, domain.ChatMessage{Role: domain.RoleUser, Message: message})
+	// messages = append(messages, domain.ChatMessage{Role: domain.RoleUser, Message: message})
 
 	return u.llm.Chat(ctx, messages)
 }
