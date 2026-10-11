@@ -2,6 +2,8 @@ services:
   app:
     build: .
     restart: unless-stopped
+    # Jalankan sebagai root di dalam kontainer agar memiliki izin tulis ke bind-mount ./data/whatsapp pada kartu SD STB
+    user: "0:0"
     env_file:
       - .env
     ports:
