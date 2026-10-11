@@ -102,10 +102,15 @@ CONTOH YANG BENAR:
 
 Waktu server: ` + time.Now().Format("Monday, 02 January 2006 15:04 WIB")
 
+	var extraSystem []string
 	contents := make([]geminiContent, 0, len(messages))
 	for _, msg := range messages {
 		if strings.TrimSpace(msg.Message) == "" {
 			continue // skip pesan kosong agar Gemini tidak error INVALID_ARGUMENT
+		}
+		if msg.Role == domain.RoleSystem {
+			extraSystem = append(extraSystem, msg.Message)
+			continue
 		}
 		role := "user"
 		if msg.Role == domain.RoleAssistant {
@@ -117,6 +122,10 @@ Waktu server: ` + time.Now().Format("Monday, 02 January 2006 15:04 WIB")
 		})
 	}
 
+	if len(extraSystem) > 0 {
+		systemPrompt += "\n\n" + strings.Join(extraSystem, "\n\n")
+	}
+
 	reqBody := geminiRequest{
 		SystemInstruction: &geminiContent{
 			Parts: []geminiPart{{Text: systemPrompt}},
@@ -125,6 +134,60 @@ Waktu server: ` + time.Now().Format("Monday, 02 January 2006 15:04 WIB")
 	}
 
 	return c.callAPI(ctx, reqBody)
+}
+
+// ExtractMemories analyzes a user message or conversation turn and extracts newly discovered long-term facts or traits.
+func (c *geminiClient) ExtractMemories(ctx context.Context, conversation string) ([]domain.MemoryItem, error) {
+	systemPrompt := `Kamu adalah asisten analisis memori kepribadian.
+Tugasmu: Analisis pesan/percakapan berikut dari pengguna (user).
+Cari apakah ada fakta permanen, kepribadian, gaya komunikasi, preferensi (makanan, minuman, hobi, teknologi), kebiasaan, pekerjaan, atau info personal jangka panjang tentang dirinya.
+
+ATURAN PENTING:
+1. JANGAN simpan hal-hal sementara/situasional (misal: "lagi macet", "lapar", "besok meeting", "mau tidur", "lagi nonton").
+2. Simpan HANYA fakta atau preferensi bernilai jangka panjang yang mencerminkan profil/kepribadian/kebiasaan pengguna.
+3. Contoh yang HARUS diekstrak:
+   - "gw suka kopi tanpa gula" -> category: "preference", fact: "Menyukai kopi hitam tanpa gula"
+   - "gw ga suka bertele-tele" -> category: "personality", fact: "Menyukai komunikasi to-the-point dan tidak bertele-tele"
+   - "gw biasa begadang sampe subuh" -> category: "habit", fact: "Punya kebiasaan tidur larut malam / begadang"
+   - "gw software engineer backend golang" -> category: "work", fact: "Bekerja sebagai backend software engineer dengan Go (Golang)"
+   - "panggil gw Ryan" -> category: "personal", fact: "Nama panggilan Ryan"
+4. Kategori yang valid: "personality", "preference", "habit", "work", "personal".
+5. Jika TIDAK ADA fakta permanen/profil baru yang relevan, kembalikan JSON array KOSONG: []
+
+Kembalikan HANYA JSON array valid tanpa markdown formatting. Format:
+[
+  {
+    "category": "personality|preference|habit|work|personal",
+    "fact": "Deskripsi fakta singkat, jelas, dan baku"
+  }
+]`
+
+	reqBody := geminiRequest{
+		SystemInstruction: &geminiContent{
+			Parts: []geminiPart{{Text: systemPrompt}},
+		},
+		Contents: []geminiContent{
+			{
+				Role:  "user",
+				Parts: []geminiPart{{Text: conversation}},
+			},
+		},
+		GenerationConfig: &geminiGenerationConfig{
+			ResponseMimeType: "application/json",
+		},
+	}
+
+	resp, err := c.callAPI(ctx, reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	resp = cleanJSONResponse(resp)
+	var items []domain.MemoryItem
+	if err := json.Unmarshal([]byte(resp), &items); err != nil {
+		return nil, fmt.Errorf("gemini unmarshal memories: %w (raw: %s)", err, resp)
+	}
+	return items, nil
 }
 
 // ClassifyIntent uses Gemini to classify user intent.

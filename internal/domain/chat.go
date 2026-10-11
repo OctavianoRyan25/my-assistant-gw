@@ -72,6 +72,8 @@ type LLMClient interface {
 	ParseExpense(ctx context.Context, message string) (amount float64, category string, description string, err error)
 	// ParseReceiptFromImage uses vision AI to extract expense items from a receipt image.
 	ParseReceiptFromImage(ctx context.Context, imageData []byte, mimeType string) (*ReceiptParsed, error)
+	// ExtractMemories analyzes a user message or conversation turn and extracts newly discovered long-term facts or traits.
+	ExtractMemories(ctx context.Context, conversation string) ([]MemoryItem, error)
 	// ParseTranscription uses audio AI to extract expense items from an audio message.
 	// ParseTranscription(ctx context.Context, audioData []byte, mimeType string) (string, error)
 }

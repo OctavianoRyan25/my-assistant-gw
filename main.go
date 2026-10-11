@@ -60,6 +60,7 @@ func main() {
 	reminderRepo := repository.NewReminderRepository(db)
 	expenseRepo  := repository.NewExpenseRepository(db)
 	chatRepo     := repository.NewChatRepository(db)
+	memoryRepo   := repository.NewMemoryRepository(db)
 
 	// ── 6. Infrastructure clients ─────────────────────────────────────────────
 	var llmClient domain.LLMClient
@@ -70,7 +71,7 @@ func main() {
 		log.Info("LLM provider: Google Gemini", zap.String("model", cfg.GeminiModel))
 		llmClient = llm.NewGeminiClient(cfg.GeminiAPIKey, cfg.GeminiModel)
 	}
-	searchClient := search.NewDuckDuckGoClient()
+	searchClient := search.NewTavilyClient(cfg.TavilyAPIKey)
 	// Use background context for WhatsApp client init (signal context not created yet)
 	waSender, err := whatsapp.NewWhatsAppClient(context.Background(), log, cfg.WAPhoneNumber)
 	if err != nil {
@@ -81,7 +82,7 @@ func main() {
 	// ── 7. Use cases (business logic) ────────────────────────────────────────
 	reminderUC := usecase.NewReminderUsecase(reminderRepo, llmClient, waSender, cfg.WAPhoneNumber, log, tz)
 	expenseUC  := usecase.NewExpenseUsecase(expenseRepo, waSender, cfg.WAPhoneNumber, log, tz)
-	chatUC     := usecase.NewChatUsecase(chatRepo, llmClient, searchClient, reminderUC, expenseUC, log, tz)
+	chatUC     := usecase.NewChatUsecase(chatRepo, memoryRepo, llmClient, searchClient, reminderUC, expenseUC, log, tz)
 
 	// ── 8. Register WhatsApp message handler ──────────────────────────────────
 	waSender.RegisterMessageHandler(chatUC)

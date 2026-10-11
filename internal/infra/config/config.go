@@ -25,6 +25,9 @@ type Config struct {
 	OpenRouterAPIKey string
 	OpenRouterModel  string
 
+	// Search
+	TavilyAPIKey string
+
 	// WhatsApp
 	WAPhoneNumber string // owner's WhatsApp JID (e.g. 628xxxx@s.whatsapp.net)
 
@@ -58,6 +61,8 @@ func LoadConfig() (*Config, error) {
 		GeminiModel:      getEnvOrDefault("GEMINI_MODEL", "gemini-2.5-flash"),
 		OpenRouterAPIKey: os.Getenv("OPENROUTER_API_KEY"),
 		OpenRouterModel:  getEnvOrDefault("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
+
+		TavilyAPIKey: os.Getenv("TAVILY_API_KEY"),
 
 		WAPhoneNumber: os.Getenv("WA_PHONE_NUMBER"),
 

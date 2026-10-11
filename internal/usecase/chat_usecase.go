@@ -21,6 +21,7 @@ const receiptStateKey = "self" // single-user assistant: always same key
 
 type chatUsecase struct {
 	chatRepo     domain.ChatRepository
+	memoryRepo   domain.MemoryRepository
 	llm          domain.LLMClient
 	searchClient domain.SearchClient
 	reminderUC   domain.ReminderUsecase
@@ -33,6 +34,7 @@ type chatUsecase struct {
 // NewChatUsecase creates the orchestrating chat usecase.
 func NewChatUsecase(
 	chatRepo domain.ChatRepository,
+	memoryRepo domain.MemoryRepository,
 	llm domain.LLMClient,
 	searchClient domain.SearchClient,
 	reminderUC domain.ReminderUsecase,
@@ -42,6 +44,7 @@ func NewChatUsecase(
 ) domain.ChatUsecase {
 	return &chatUsecase{
 		chatRepo:     chatRepo,
+		memoryRepo:   memoryRepo,
 		llm:          llm,
 		searchClient: searchClient,
 		reminderUC:   reminderUC,
@@ -73,6 +76,9 @@ func (u *chatUsecase) HandleMessage(ctx context.Context, userMessage string) (st
 	if err := u.saveMessage(ctx, domain.RoleUser, userMessage); err != nil {
 		u.logger.Warn("failed to save user message", zap.Error(err))
 	}
+
+	// 1b. Analisis memori kepribadian & fakta user secara background (asynchronous, tanpa blocking respon chat)
+	go u.analyzeMemoriesAsync(userMessage)
 
 	// 2. Classify intent
 	intent, err := u.llm.ClassifyIntent(ctx, userMessage)
@@ -171,6 +177,10 @@ func (u *chatUsecase) HandleAudioMessage(ctx context.Context, audioData []byte, 
 	// Save user message to history
 	if err := u.saveMessage(ctx, domain.RoleUser, intent.RawMessage); err != nil {
 		u.logger.Warn("failed to save user message", zap.Error(err))
+	}
+
+	if strings.TrimSpace(intent.RawMessage) != "" {
+		go u.analyzeMemoriesAsync(intent.RawMessage)
 	}
 
 	// Save assistant reply to history
@@ -414,7 +424,7 @@ func (u *chatUsecase) handleExpense(ctx context.Context, message string) (string
 	return FormatExpenseConfirmation(expense), nil
 }
 
-// handleSearch performs a web search and returns an LLM-synthesized answer.
+// handleSearch performs a web search and directly returns Tavily's synthesized answer.
 func (u *chatUsecase) handleSearch(ctx context.Context, message string) (string, error) {
 	results, err := u.searchClient.Search(ctx, message, maxSearchResults)
 	if err != nil {
@@ -423,52 +433,164 @@ func (u *chatUsecase) handleSearch(ctx context.Context, message string) (string,
 	}
 
 	if len(results) == 0 {
+		fmt.Println("No results found, falling back to LLM direct answer")
 		return u.handleGeneralChat(ctx, message)
 	}
 
-	// Build context from search results
-	var contextParts []string
-	for i, r := range results {
-		contextParts = append(contextParts,
-			fmt.Sprintf("[%d] %s\nURL: %s\n%s", i+1, r.Title, r.URL, r.Snippet),
-		)
+	var directAnswer string
+	var sources []string
+
+	for _, r := range results {
+		if r.Title == "Tavily Answer" {
+			directAnswer = r.Snippet
+		} else if r.URL != "" {
+			sources = append(sources, fmt.Sprintf("• %s\n  %s", r.Title, r.URL))
+		}
 	}
-	searchContext := strings.Join(contextParts, "\n\n---\n\n")
 
-	// Build augmented message
-	augmentedMessage := fmt.Sprintf(`Pertanyaan pengguna: %s
-
-Berikut hasil pencarian web yang relevan:
-
-%s
-
-Berdasarkan hasil pencarian di atas, berikan jawaban yang informatif dan ringkas dalam Bahasa Indonesia. Sebutkan sumber jika relevan.`, message, searchContext)
-
-	// Get history for context
-	history, _ := u.chatRepo.GetRecentMessages(ctx, maxChatHistory)
-	messages := make([]domain.ChatMessage, 0, len(history)+1)
-	for _, h := range history {
-		messages = append(messages, *h)
+	var sb strings.Builder
+	if directAnswer != "" {
+		sb.WriteString(directAnswer)
+	} else if len(results) > 0 {
+		sb.WriteString(results[0].Snippet)
 	}
-	messages = append(messages, domain.ChatMessage{Role: domain.RoleUser, Message: augmentedMessage})
 
-	return u.llm.Chat(ctx, messages)
+	if len(sources) > 0 {
+		sb.WriteString("\n\n*Sumber Referensi:*\n")
+		sb.WriteString(strings.Join(sources, "\n"))
+	}
+
+	return strings.TrimSpace(sb.String()), nil
 }
 
-// handleGeneralChat handles general conversation with context history.
+// handleGeneralChat handles general conversation with context history and long-term personality memory.
 func (u *chatUsecase) handleGeneralChat(ctx context.Context, message string) (string, error) {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	if strings.Contains(lower, "kamu tau apa") || strings.Contains(lower, "kamu tahu apa") ||
+		strings.Contains(lower, "inget apa tentang aku") || strings.Contains(lower, "ingat apa tentang aku") ||
+		strings.Contains(lower, "daftar memori") || strings.Contains(lower, "list memori") {
+		return u.handleListMemories(ctx)
+	}
+
 	history, err := u.chatRepo.GetRecentMessages(ctx, maxChatHistory)
 	if err != nil {
 		u.logger.Warn("failed to get chat history", zap.Error(err))
 	}
 
-	messages := make([]domain.ChatMessage, 0, len(history)+1)
+	messages := make([]domain.ChatMessage, 0, len(history)+2)
+
+	// Inject Long-Term Memories as a System Prompt Context
+	if u.memoryRepo != nil {
+		memories, err := u.memoryRepo.GetAll(ctx)
+		if err == nil && len(memories) > 0 {
+			var sb strings.Builder
+			sb.WriteString("Catatan Memori Jangka Panjang tentang Pengguna (User) yang telah kamu pelajari seiring waktu:\n")
+			for _, m := range memories {
+				sb.WriteString(fmt.Sprintf("- [%s] %s\n", m.Category, m.Fact))
+			}
+			sb.WriteString("\nInstruksi: Gunakan memori di atas agar kamu bersikap alami, relevan, dan mengenalnya secara personal layaknya teman akrab. JANGAN pernah berkata 'Berdasarkan memori saya'. Bersikaplah seolah kamu memang sudah ingat dan memahami karakternya.")
+			messages = append(messages, domain.ChatMessage{
+				Role:    domain.RoleSystem,
+				Message: sb.String(),
+			})
+		}
+	}
+
 	for _, h := range history {
 		messages = append(messages, *h)
 	}
-	// messages = append(messages, domain.ChatMessage{Role: domain.RoleUser, Message: message})
 
 	return u.llm.Chat(ctx, messages)
+}
+
+func (u *chatUsecase) handleListMemories(ctx context.Context) (string, error) {
+	if u.memoryRepo == nil {
+		return "Belum ada memori yang tersimpan wir.", nil
+	}
+	memories, err := u.memoryRepo.GetAll(ctx)
+	if err != nil || len(memories) == 0 {
+		return "Belum ada catatan kepribadian atau kebiasaan lu yang gw simpen wir. Sering-sering ngobrol ya biar gw makin kenal! 😉", nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("🧠 *Hal-hal yang udah gw pahami & ingat tentang lu sejauh ini:*\n\n")
+	for i, m := range memories {
+		categoryIcon := "📌"
+		switch m.Category {
+		case domain.MemoryCategoryPersonality:
+			categoryIcon = "🎭"
+		case domain.MemoryCategoryPreference:
+			categoryIcon = "⭐"
+		case domain.MemoryCategoryHabit:
+			categoryIcon = "⏰"
+		case domain.MemoryCategoryWork:
+			categoryIcon = "💼"
+		case domain.MemoryCategoryPersonal:
+			categoryIcon = "👤"
+		}
+		sb.WriteString(fmt.Sprintf("%d. %s *[%s]* %s\n", i+1, categoryIcon, strings.ToUpper(m.Category), m.Fact))
+	}
+	sb.WriteString("\n_Catatan ini otomatis bertambah/update saat lu ngobrol santai!_")
+	return sb.String(), nil
+}
+
+// analyzeMemoriesAsync extracts facts/traits in the background without slowing down chat responses.
+func (u *chatUsecase) analyzeMemoriesAsync(userMessage string) {
+	if u.memoryRepo == nil || u.llm == nil {
+		return
+	}
+
+	clean := strings.TrimSpace(userMessage)
+	if len(strings.Fields(clean)) < 3 {
+		return
+	}
+
+	lower := strings.ToLower(clean)
+	skipKeywords := []string{"menu", "fitur", "batal", "cancel", "ya", "oke", "yes", "sip", "koreksi", "hapus", "reset"}
+	for _, kw := range skipKeywords {
+		if lower == kw {
+			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	items, err := u.llm.ExtractMemories(ctx, clean)
+	if err != nil {
+		u.logger.Debug("extract memories skipped or failed", zap.Error(err))
+		return
+	}
+
+	for _, item := range items {
+		factClean := strings.TrimSpace(item.Fact)
+		if factClean == "" {
+			continue
+		}
+
+		similar, err := u.memoryRepo.FindSimilar(ctx, factClean)
+		if err != nil || similar {
+			continue
+		}
+
+		cat := item.Category
+		if cat == "" {
+			cat = domain.MemoryCategoryPersonal
+		}
+
+		mem := &domain.Memory{
+			Category: cat,
+			Fact:     factClean,
+		}
+		if err := u.memoryRepo.Save(ctx, mem); err != nil {
+			u.logger.Warn("failed to save user memory", zap.Error(err))
+		} else {
+			u.logger.Info("🧠 Memory learned automatically!",
+				zap.String("category", mem.Category),
+				zap.String("fact", mem.Fact),
+			)
+		}
+	}
 }
 
 // handleReset clears the chat history.
