@@ -55,7 +55,7 @@ func LoadConfig() (*Config, error) {
 
 		LLMProvider:      getEnvOrDefault("LLM_PROVIDER", "gemini"),
 		GeminiAPIKey:     os.Getenv("GEMINI_API_KEY"),
-		GeminiModel:      getEnvOrDefault("GEMINI_MODEL", "gemini-1.5-flash"),
+		GeminiModel:      getEnvOrDefault("GEMINI_MODEL", "gemini-2.5-flash"),
 		OpenRouterAPIKey: os.Getenv("OPENROUTER_API_KEY"),
 		OpenRouterModel:  getEnvOrDefault("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
 
