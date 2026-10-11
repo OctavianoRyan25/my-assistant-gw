@@ -8,6 +8,12 @@
 
 Kebutuhan akan asisten pribadi yang bisa diakses langsung lewat WhatsApp, tanpa perlu install aplikasi tambahan. Dibangun dengan Go, dihosting di STB (spesifikasi terbatas), sehingga desain sistem harus ringan dan mengandalkan API LLM gratis (bukan model lokal).
 
+V2
+
+- Perhitungan kalori berdasarkan gambar yang dikirimkan, nantinya akan disesuaikan dengan TB dan BB sekarang.
+- Pelaporan workout, misalnya mengirim gambar/teks hari ini sudah berolahraga (mis. gym, jogging, berenang dll), nanti akan ada statistik setiap bulannya.
+- Terdapat juga peringatan jika pengeluaran melebihi treshold yang ditentukan(gaji per bulan).
+
 ## 2. Tujuan Produk
 
 - Menyediakan satu titik akses (WhatsApp) untuk mengelola reminder, pengeluaran, pencarian informasi, dan diskusi santai.
@@ -194,7 +200,7 @@ Bisa pakai LLM call kecil untuk klasifikasi (prompt terpisah dengan output JSON 
 ## 7. Arsitektur Teknis (Ringkas)
 
 ```
-WhatsApp (whatsmeow) 
+WhatsApp (whatsmeow)
     → Go service (HTTP/webhook handler)
         → Intent Router
         → LLM Client (Gemini/Groq/OpenRouter — sesuai kebutuhan)
@@ -225,11 +231,11 @@ WhatsApp (whatsmeow)
 
 ## 10. Roadmap Singkat
 
-| Fase | Fitur |
-| --- | --- |
+| Fase               | Fitur                                                           |
+| ------------------ | --------------------------------------------------------------- |
 | V1 (fokus PRD ini) | Reminder, Pencatatan pengeluaran, Web search/RAG, Brainstorming |
-| V2 | Habit tracker (gym/jogging/gaming), voice note, multi-modal |
-| V3 | RAG atas dokumen/notes pribadi (vector DB), dashboard web |
+| V2                 | Habit tracker (gym/jogging/gaming), voice note, multi-modal     |
+| V3                 | RAG atas dokumen/notes pribadi (vector DB), dashboard web       |
 
 ## 11. Pertanyaan Terbuka
 

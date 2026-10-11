@@ -14,12 +14,16 @@ const (
 
 // Intent types for routing
 const (
-	IntentReminder           = "reminder"
-	IntentExpense            = "expense"
-	IntentSearch             = "search"
-	IntentGeneralChat        = "general_chat"
-	IntentReset              = "reset"
-	IntentReceiptCorrection  = "receipt_correction" // user mengoreksi hasil scan struk
+	IntentReminder          = "reminder"
+	IntentExpense           = "expense"
+	IntentSearch            = "search"
+	IntentGeneralChat       = "general_chat"
+	IntentReset             = "reset"
+	IntentReceiptCorrection = "receipt_correction" // user mengoreksi hasil scan struk
+	IntentWorkout           = "workout"            // pelaporan workout (teks/gambar) & statistik
+	IntentCalorie           = "calorie"            // perhitungan & logging kalori makanan
+	IntentBudget            = "budget"             // pengaturan atau pengecekan threshold budget/gaji
+	IntentProfile           = "profile"            // pengaturan profil fisik TB & BB
 )
 
 // ChatMessage represents a single turn in the conversation.

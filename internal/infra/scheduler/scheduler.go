@@ -72,3 +72,12 @@ func (s *Scheduler) sendMonthlyExpenseReport() {
 		s.logger.Error("send monthly expense report error", zap.Error(err))
 	}
 }
+
+// SendMonthlyWorkoutReport
+func (s *Scheduler) sendMonthlyWorkoutReport() {
+	// _ := context.Background()
+	s.logger.Info("checking monthly workout report")
+	// if err := s.workoutUC.SendMonthlyReportIfDue(ctx); err != nil {
+	// 	s.logger.Error("send monthly workout report error", zap.Error(err))
+	// }
+}
