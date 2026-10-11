@@ -7,14 +7,16 @@ services:
     ports:
       - "${APP_PORT:-8080}:${APP_PORT:-8080}"
     volumes:
-      - whatsapp_data:/app
+      # Data disimpan di folder ./data/whatsapp di dalam kartu SD
+      - ./data/whatsapp:/app
       - ./.env:/app/.env:ro
     depends_on:
       mysql:
         condition: service_healthy
 
   mysql:
-    image: mysql:8.4
+    # Direkomendasikan MariaDB untuk STB agar ringan dan native support ARM
+    image: mariadb:10.11
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
@@ -22,15 +24,17 @@ services:
       MYSQL_USER: ${DB_USER:?Set DB_USER in .env}
       MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
     volumes:
-      - mysql_data:/var/lib/mysql
+      # Database disimpan di folder ./data/mysql di dalam kartu SD
+      - ./data/mysql:/var/lib/mysql
       - ./migrations:/docker-entrypoint-initdb.d:ro
+    # Optimasi RAM khusus STB (maksimal memori database ~128MB)
+    command:
+      - --innodb-buffer-pool-size=128M
+      - --innodb-log-buffer-size=16M
+      - --max-connections=50
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
-      interval: 5s
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
       timeout: 5s
-      retries: 20
+      retries: 5
       start_period: 30s
-
-volumes:
-  mysql_data:
-  whatsapp_data:
