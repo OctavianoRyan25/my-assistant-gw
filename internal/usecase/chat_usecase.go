@@ -88,13 +88,43 @@ func (u *chatUsecase) HandleMessage(ctx context.Context, userMessage string) (st
 	// 1b. Analisis memori kepribadian & fakta user secara background (asynchronous, tanpa blocking respon chat)
 	go u.analyzeMemoriesAsync(userMessage)
 
-	// 2. Classify intent
-	intent, err := u.llm.ClassifyIntent(ctx, userMessage)
+	// 2. Classify intent — sertakan 3 pesan terakhir sebagai konteks supaya AI paham referensi ambigu
+	classifyInput := userMessage
+	if recentHistory, err := u.chatRepo.GetRecentMessages(ctx, 3); err == nil && len(recentHistory) > 1 {
+		var sb strings.Builder
+		sb.WriteString("KONTEKS PERCAKAPAN SEBELUMNYA (hanya untuk referensi):\n")
+		for _, h := range recentHistory[:len(recentHistory)-1] {
+			role := "User"
+			if h.Role == domain.RoleAssistant {
+				role = "Assistant"
+			}
+			sb.WriteString(fmt.Sprintf("%s: %s\n", role, h.Message))
+		}
+		sb.WriteString("\nPESAN TERBARU: ")
+		sb.WriteString(userMessage)
+		classifyInput = sb.String()
+	}
+
+	intent, err := u.llm.ClassifyIntent(ctx, classifyInput)
 	if err != nil {
 		u.logger.Error("intent classification failed, falling back to general chat", zap.Error(err))
 		intent = &domain.IntentResult{Intent: domain.IntentGeneralChat, Confidence: 0.5}
 	}
-	u.logger.Info("intent classified", zap.String("intent", intent.Intent), zap.Float64("confidence", intent.Confidence))
+	u.logger.Info("intent classified",
+		zap.String("intent", intent.Intent),
+		zap.Float64("confidence", intent.Confidence),
+		zap.String("message", userMessage),
+	)
+
+	// 2b. Jika confidence rendah, jangan paksa ke handler spesifik.
+	// Threshold 0.75: hanya route ke handler khusus kalau LLM cukup yakin.
+	if intent.Confidence < 0.75 && intent.Intent != domain.IntentGeneralChat {
+		u.logger.Info("low confidence — fallback to general_chat",
+			zap.String("original_intent", intent.Intent),
+			zap.Float64("confidence", intent.Confidence),
+		)
+		intent.Intent = domain.IntentGeneralChat
+	}
 
 	// 3. Route to handler
 	var reply string
@@ -220,15 +250,23 @@ func (u *chatUsecase) handleWorkout(ctx context.Context, message string) (string
 	cleanMsg := strings.TrimSpace(message)
 	lower := strings.ToLower(cleanMsg)
 
-	// 1. Cek apakah user ingin menghapus / membatalkan catatan workout
-	deleteKeywords := []string{"hapus", "delete", "batal", "cancel"}
-	isDelete := false
-	for _, kw := range deleteKeywords {
+	// 1. Cek apakah user ingin menghapus / membatalkan catatan workout.
+	// Butuh context "workout" atau ID angka di pesan agar tidak false-positive.
+	deleteVerbPresent := false
+	for _, kw := range []string{"hapus", "delete"} {
 		if strings.Contains(lower, kw) {
-			isDelete = true
+			deleteVerbPresent = true
 			break
 		}
 	}
+	workoutContextPresent := strings.Contains(lower, "workout") ||
+		strings.Contains(lower, "olahraga") ||
+		strings.Contains(lower, "latihan") ||
+		strings.Contains(lower, "gym") ||
+		strings.Contains(lower, "lari") ||
+		strings.Contains(lower, "jogging")
+	hasIDInMessage := regexp.MustCompile(`\b\d+\b`).MatchString(lower)
+	isDelete := deleteVerbPresent && (workoutContextPresent || hasIDInMessage || strings.Contains(lower, "terakhir") || strings.Contains(lower, "last"))
 
 	if isDelete {
 		// A. Hapus workout terakhir / tadi
@@ -269,16 +307,21 @@ func (u *chatUsecase) handleWorkout(ctx context.Context, message string) (string
 		}
 	}
 
-	// 3. Cek apakah user ingin melihat statistik/rekap bulanan
-	statKeywords := []string{"statistik", "stats", "rekap", "laporan", "summary", "bulan ini", "total"}
-	for _, kw := range statKeywords {
-		if strings.Contains(lower, kw) {
-			stats, err := u.workoutUC.GetCurrentMonthStats(ctx)
-			if err != nil {
-				return "", fmt.Errorf("get workout stats: %w", err)
-			}
-			return FormatWorkoutReport(stats), nil
+	// 3. Cek apakah user ingin melihat statistik/rekap workout bulanan
+	// Gunakan kata kunci yang spesifik workout agar tidak bentrok dengan expense report
+	workoutStatContext := strings.Contains(lower, "statistik") ||
+		strings.Contains(lower, "stats") ||
+		strings.Contains(lower, "summary workout") ||
+		strings.Contains(lower, "rekap workout") ||
+		strings.Contains(lower, "laporan workout") ||
+		strings.Contains(lower, "progress workout") ||
+		strings.Contains(lower, "bulan ini") && (strings.Contains(lower, "workout") || strings.Contains(lower, "olahraga") || strings.Contains(lower, "latihan"))
+	if workoutStatContext {
+		stats, err := u.workoutUC.GetCurrentMonthStats(ctx)
+		if err != nil {
+			return "", fmt.Errorf("get workout stats: %w", err)
 		}
+		return FormatWorkoutReport(stats), nil
 	}
 
 	// 4. Jika bukan perintah list/delete/stats, catat sebagai workout baru
@@ -483,15 +526,22 @@ func (u *chatUsecase) handleReminder(ctx context.Context, message string) (strin
 	cleanMsg := strings.TrimSpace(message)
 	lower := strings.ToLower(cleanMsg)
 
-	// 1. Cek apakah user ingin membatalkan atau menghapus reminder
-	deleteKeywords := []string{"batalkan", "batal", "cancel", "hapus", "delete"}
-	isDelete := false
-	for _, kw := range deleteKeywords {
+	// 1. Cek apakah user ingin membatalkan atau menghapus reminder.
+	// Supaya tidak false-positive, pesan harus mengandung domain context ("reminder" atau "jadwal")
+	// ATAU kata hapus/batalkan yang dikombinasi dengan ID angka.
+	deleteVerbPresent := false
+	for _, kw := range []string{"batalkan", "hapus", "delete", "cancel"} {
 		if strings.Contains(lower, kw) {
-			isDelete = true
+			deleteVerbPresent = true
 			break
 		}
 	}
+	reminderContextPresent := strings.Contains(lower, "reminder") ||
+		strings.Contains(lower, "jadwal") ||
+		strings.Contains(lower, "alarm") ||
+		strings.Contains(lower, "ingatkan")
+	hasIDInMessage := regexp.MustCompile(`\b\d+\b`).MatchString(lower)
+	isDelete := deleteVerbPresent && (reminderContextPresent || hasIDInMessage || strings.Contains(lower, "terakhir") || strings.Contains(lower, "last"))
 
 	if isDelete {
 		// A. Hapus reminder terakhir / tadi
@@ -634,16 +684,21 @@ func (u *chatUsecase) handleReminder(ctx context.Context, message string) (strin
 
 // handleExpense parses and records expense messages, or returns reports.
 func (u *chatUsecase) handleExpense(ctx context.Context, message string) (string, error) {
-	// Check if user wants a report
-	reportKeywords := []string{"laporan", "rekap", "total", "berapa", "summary"}
-	for _, kw := range reportKeywords {
-		if strings.Contains(strings.ToLower(message), kw) {
-			report, err := u.expenseUC.GetCurrentMonthReport(ctx)
-			if err != nil {
-				return "", err
-			}
-			return FormatExpenseReport(report), nil
+	lowerMsg := strings.ToLower(message)
+
+	// Cek apakah user minta laporan/rekap pengeluaran.
+	// Pakai kombinasi: harus ada kata laporan/rekap/summary ATAU "berapa" + kata uang/pengeluaran.
+	expenseReportContext := strings.Contains(lowerMsg, "laporan") ||
+		strings.Contains(lowerMsg, "rekap") ||
+		strings.Contains(lowerMsg, "summary") ||
+		strings.Contains(lowerMsg, "pengeluaran bulan") ||
+		(strings.Contains(lowerMsg, "berapa") && (strings.Contains(lowerMsg, "pengeluaran") || strings.Contains(lowerMsg, "habis") || strings.Contains(lowerMsg, "keluar") || strings.Contains(lowerMsg, "belanja")))
+	if expenseReportContext {
+		report, err := u.expenseUC.GetCurrentMonthReport(ctx)
+		if err != nil {
+			return "", err
 		}
+		return FormatExpenseReport(report), nil
 	}
 
 	// Parse expense from natural language
@@ -716,16 +771,16 @@ func (u *chatUsecase) handleGeneralChat(ctx context.Context, message string) (st
 
 	messages := make([]domain.ChatMessage, 0, len(history)+2)
 
-	// Inject Long-Term Memories as a System Prompt Context
+	// Inject Long-Term Memories as System Prompt Context
 	if u.memoryRepo != nil {
 		memories, err := u.memoryRepo.GetAll(ctx)
 		if err == nil && len(memories) > 0 {
 			var sb strings.Builder
-			sb.WriteString("Catatan Memori Jangka Panjang tentang Pengguna (User) yang telah kamu pelajari seiring waktu:\n")
+			sb.WriteString("Fakta & kepribadian user yang sudah kamu pelajari dari percakapan sebelumnya:\n")
 			for _, m := range memories {
 				sb.WriteString(fmt.Sprintf("- [%s] %s\n", m.Category, m.Fact))
 			}
-			sb.WriteString("\nInstruksi: Gunakan memori di atas agar kamu bersikap alami, relevan, dan mengenalnya secara personal layaknya teman akrab. JANGAN pernah berkata 'Berdasarkan memori saya'. Bersikaplah seolah kamu memang sudah ingat dan memahami karakternya.")
+			sb.WriteString("\nGunakan fakta ini secara natural — bersikap seolah kamu memang sudah kenal dia lama. JANGAN sebut frasa 'berdasarkan memori' atau 'saya ingat bahwa'.")
 			messages = append(messages, domain.ChatMessage{
 				Role:    domain.RoleSystem,
 				Message: sb.String(),
@@ -735,6 +790,16 @@ func (u *chatUsecase) handleGeneralChat(ctx context.Context, message string) (st
 
 	for _, h := range history {
 		messages = append(messages, *h)
+	}
+
+	// Pastikan pesan user terbaru ada di ujung konteks.
+	// (saveMessage dipanggil sebelum handleGeneralChat, jadi history sudah mengandung pesan ini.
+	// Tapi kalau history kosong atau dipangkas, kita pastikan pesannya tetap ada.)
+	if len(messages) == 0 || messages[len(messages)-1].Message != message {
+		messages = append(messages, domain.ChatMessage{
+			Role:    domain.RoleUser,
+			Message: message,
+		})
 	}
 
 	return u.llm.Chat(ctx, messages)
