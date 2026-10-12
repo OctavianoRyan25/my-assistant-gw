@@ -199,7 +199,7 @@ Kembalikan HANYA JSON valid dengan format:
 Intent yang tersedia:
 - "reminder": user ingin membuat, melihat, mengubah, atau membatalkan reminder/jadwal
 - "expense": user ingin mencatat pengeluaran, atau menanyakan laporan pengeluaran
-- "workout": user melaporkan aktivitas olahraga (gym, lari, renang, dll) atau menanyakan statistik workout
+- "workout": user melaporkan aktivitas olahraga (gym, lari, renang, dll), melihat daftar/riwayat/statistik workout, atau menghapus catatan workout
 - "search": user menanyakan informasi terkini, berita, atau hal yang butuh info real-time
 - "reset": user ingin mereset/menghapus riwayat percakapan
 - "general_chat": percakapan umum, brainstorming, diskusi, atau hal lainnya
@@ -209,6 +209,10 @@ Contoh:
 - "keluar 50rb buat makan" → {"intent": "expense", "confidence": 0.97}
 - "habis gym 60 menit, push day" → {"intent": "workout", "confidence": 0.97}
 - "tadi jogging 5km 40 menit" → {"intent": "workout", "confidence": 0.96}
+- "list workout" → {"intent": "workout", "confidence": 0.98}
+- "daftar riwayat workout" → {"intent": "workout", "confidence": 0.97}
+- "hapus workout terakhir" → {"intent": "workout", "confidence": 0.96}
+- "hapus workout 5" → {"intent": "workout", "confidence": 0.96}
 - "statistik workout bulan ini" → {"intent": "workout", "confidence": 0.95}
 - "berita AI hari ini apa?" → {"intent": "search", "confidence": 0.95}
 - "mulai obrolan baru" → {"intent": "reset", "confidence": 0.99}
@@ -682,7 +686,7 @@ Kembalikan HANYA JSON valid dengan format:
 Intent yang tersedia:
 - "reminder": user ingin membuat, melihat, mengubah, atau membatalkan reminder/jadwal
 - "expense": user ingin mencatat pengeluaran, atau menanyakan laporan pengeluaran
-- "workout": user melaporkan aktivitas olahraga (gym, lari, renang, dll) atau menanyakan statistik workout
+- "workout": user melaporkan aktivitas olahraga (gym, lari, renang, dll), melihat daftar/riwayat/statistik workout, atau menghapus catatan workout
 - "search": user menanyakan informasi terkini, berita, atau hal yang butuh info real-time
 - "reset": user ingin mereset/menghapus riwayat percakapan
 - "general_chat": percakapan umum, brainstorming, diskusi, atau hal lainnya
@@ -692,6 +696,7 @@ Contoh:
 - (audio: "keluar 50rb buat makan") → {"intent": "expense", "confidence": 0.97, "raw_message": "keluar 50rb buat makan"}
 - (audio: "habis gym 60 menit, push day") → {"intent": "workout", "confidence": 0.97, "raw_message": "habis gym 60 menit, push day"}
 - (audio: "jogging 5km tadi pagi") → {"intent": "workout", "confidence": 0.96, "raw_message": "jogging 5km tadi pagi"}
+- (audio: "lihat riwayat workout") → {"intent": "workout", "confidence": 0.96, "raw_message": "lihat riwayat workout"}
 - (audio: hening/noise/tidak jelas) → {"intent": "general_chat", "confidence": 0.3, "raw_message": "Ora krungu njir, suaramu alon."}
 
 PENTING: raw_message harus transkrip asli ucapan pengguna (bahasa Indonesia, apa adanya), bukan jawaban atau respon kamu. Kalau audio tidak jelas/hening, isi raw_message dengan pesan "Ora krungu njir, suaramu alon." dan set intent ke "general_chat".`
@@ -748,6 +753,7 @@ Aturan:
 - duration_minutes, calories_burned, distance_meters harus angka (bukan string)
 - Konversi jarak: "5km" = 5000, "500m" = 500
 - Estimasi calories_burned jika tidak disebutkan berdasarkan tipe dan durasi (contoh: gym 60 menit ≈ 300 kcal, jogging 5km ≈ 350 kcal)
+- JIKA pesan pengguna BUKAN laporan aktivitas olahraga fisik yang dilakukan (misalnya instruksi sistem 'list workout', 'hapus workout', pertanyaan, sapaan, atau obrolan umum), kembalikan JSON dengan title string kosong: {"title": "", "type": ""}
 - Kembalikan HANYA JSON tanpa teks pengantar atau markdown block`
 
 	reqBody := geminiRequest{
@@ -777,7 +783,7 @@ Aturan:
 		return nil, fmt.Errorf("gemini workout parse JSON: %w (raw: %s)", err, resp)
 	}
 
-	if parsed.Title == "" && parsed.Type == "" {
+	if strings.TrimSpace(parsed.Title) == "" {
 		return nil, fmt.Errorf("tidak dapat mengekstrak informasi workout dari pesan")
 	}
 	if parsed.Type == "" {

@@ -167,6 +167,52 @@ func (r *workoutRepository) GetMonthlyStats(ctx context.Context, year, month int
 	}, nil
 }
 
+func (r *workoutRepository) GetRecent(ctx context.Context, limit int) ([]*domain.Workout, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	query := `
+		SELECT id, title, type, duration_minutes, calories_burned, distance_meters, description, logged_at, created_at, updated_at
+		FROM workouts
+		ORDER BY logged_at DESC, id DESC
+		LIMIT ?
+	`
+	rows, err := r.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("workout repository get recent: %w", err)
+	}
+	defer rows.Close()
+
+	var workouts []*domain.Workout
+	for rows.Next() {
+		var w domain.Workout
+		var desc sql.NullString
+		var updatedAt sql.NullTime
+		if err := rows.Scan(
+			&w.ID,
+			&w.Title,
+			&w.Type,
+			&w.DurationMinutes,
+			&w.CaloriesBurned,
+			&w.DistanceMeters,
+			&desc,
+			&w.LoggedAt,
+			&w.CreatedAt,
+			&updatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("workout repository scan row: %w", err)
+		}
+		if desc.Valid {
+			w.Description = desc.String
+		}
+		if updatedAt.Valid {
+			w.UpdatedAt = &updatedAt.Time
+		}
+		workouts = append(workouts, &w)
+	}
+	return workouts, rows.Err()
+}
+
 func (r *workoutRepository) Delete(ctx context.Context, id int64) error {
 	_, err := r.db.ExecContext(ctx, `DELETE FROM workouts WHERE id = ?`, id)
 	if err != nil {

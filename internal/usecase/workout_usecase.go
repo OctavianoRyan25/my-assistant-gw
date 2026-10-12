@@ -118,6 +118,51 @@ func (u *workoutUsecase) GetCurrentMonthStats(ctx context.Context) (*domain.Work
 	return u.repo.GetMonthlyStats(ctx, now.Year(), int(now.Month()))
 }
 
+func (u *workoutUsecase) GetRecentWorkouts(ctx context.Context, limit int) ([]*domain.Workout, error) {
+	return u.repo.GetRecent(ctx, limit)
+}
+
+func (u *workoutUsecase) DeleteWorkout(ctx context.Context, id int64) (*domain.Workout, error) {
+	workout, err := u.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("delete workout: get by id: %w", err)
+	}
+	if workout == nil {
+		return nil, fmt.Errorf("workout not found")
+	}
+
+	if err := u.repo.Delete(ctx, id); err != nil {
+		return nil, fmt.Errorf("delete workout: %w", err)
+	}
+
+	u.logger.Info("workout deleted",
+		zap.Int64("id", workout.ID),
+		zap.String("title", workout.Title),
+	)
+	return workout, nil
+}
+
+func (u *workoutUsecase) DeleteLatestWorkout(ctx context.Context) (*domain.Workout, error) {
+	recent, err := u.repo.GetRecent(ctx, 1)
+	if err != nil {
+		return nil, fmt.Errorf("delete latest workout: fetch recent: %w", err)
+	}
+	if len(recent) == 0 {
+		return nil, fmt.Errorf("no workouts found")
+	}
+
+	latest := recent[0]
+	if err := u.repo.Delete(ctx, latest.ID); err != nil {
+		return nil, fmt.Errorf("delete latest workout: %w", err)
+	}
+
+	u.logger.Info("latest workout deleted",
+		zap.Int64("id", latest.ID),
+		zap.String("title", latest.Title),
+	)
+	return latest, nil
+}
+
 func (u *workoutUsecase) SendMonthlyReportIfDue(ctx context.Context) error {
 	now := time.Now().In(u.timezone)
 	// Check if today is the last day of the month
@@ -137,6 +182,83 @@ func (u *workoutUsecase) SendMonthlyReportIfDue(ctx context.Context) error {
 	}
 	u.logger.Info("monthly workout report sent", zap.String("period", stats.Period))
 	return nil
+}
+
+// FormatWorkoutList returns a nicely formatted WhatsApp message for recent workouts.
+func FormatWorkoutList(workouts []*domain.Workout) string {
+	if len(workouts) == 0 {
+		return "Belum ada riwayat workout yang tercatat wir 🏋️‍♂️. Yuk mulai olahraga!"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("🏋️ *Riwayat Catatan Workout:*\n\n")
+
+	dayNames := map[string]string{
+		"Sunday":    "Min",
+		"Monday":    "Sen",
+		"Tuesday":   "Sel",
+		"Wednesday": "Rab",
+		"Thursday":  "Kam",
+		"Friday":    "Jum",
+		"Saturday":  "Sab",
+	}
+	monthNames := map[string]string{
+		"January":   "Jan",
+		"February":  "Feb",
+		"March":     "Mar",
+		"April":     "Apr",
+		"May":       "Mei",
+		"June":      "Jun",
+		"July":      "Jul",
+		"August":    "Agt",
+		"September": "Sep",
+		"October":   "Okt",
+		"November":  "Nov",
+		"December":  "Des",
+	}
+
+	for i, w := range workouts {
+		day := dayNames[w.LoggedAt.Format("Monday")]
+		if day == "" {
+			day = w.LoggedAt.Format("Mon")
+		}
+		month := monthNames[w.LoggedAt.Format("January")]
+		if month == "" {
+			month = w.LoggedAt.Format("Jan")
+		}
+		dateStr := fmt.Sprintf("%s, %02d %s %s %s", day, w.LoggedAt.Day(), month, w.LoggedAt.Format("2006"), w.LoggedAt.Format("15:04"))
+
+		sb.WriteString(fmt.Sprintf("%d. *%s* (ID: %d)\n", i+1, w.Title, w.ID))
+		sb.WriteString(fmt.Sprintf("   📅 %s\n", dateStr))
+
+		var details []string
+		if w.Type != "" {
+			details = append(details, fmt.Sprintf("🏷️ %s", w.Type))
+		}
+		if w.DurationMinutes > 0 {
+			details = append(details, fmt.Sprintf("⏱️ %d mnt", w.DurationMinutes))
+		}
+		if w.CaloriesBurned > 0 {
+			details = append(details, fmt.Sprintf("🔥 ~%d kcal", w.CaloriesBurned))
+		}
+		if w.DistanceMeters > 0 {
+			if w.DistanceMeters >= 1000 {
+				details = append(details, fmt.Sprintf("🏃 %.2f km", w.DistanceMeters/1000.0))
+			} else {
+				details = append(details, fmt.Sprintf("🏃 %.0f m", w.DistanceMeters))
+			}
+		}
+		if len(details) > 0 {
+			sb.WriteString(fmt.Sprintf("   %s\n", strings.Join(details, " • ")))
+		}
+		if w.Description != "" {
+			sb.WriteString(fmt.Sprintf("   📝 %s\n", w.Description))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("_Ketik *hapus workout <ID>* atau *hapus workout terakhir* untuk menghapus catatan._")
+	return strings.TrimSpace(sb.String())
 }
 
 // FormatWorkoutConfirmation returns a friendly confirmation message.

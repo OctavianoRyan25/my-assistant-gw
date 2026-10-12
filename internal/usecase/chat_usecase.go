@@ -3,6 +3,8 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -209,14 +211,65 @@ func (u *chatUsecase) handleWorkoutImage(ctx context.Context, imageData []byte, 
 	return FormatWorkoutConfirmation(workout), nil
 }
 
-// handleWorkout processes workout-related text messages: recording a new workout or fetching stats.
+// handleWorkout processes workout-related text messages: recording a new workout, listing workouts, deleting workouts, or fetching stats.
 func (u *chatUsecase) handleWorkout(ctx context.Context, message string) (string, error) {
 	if u.workoutUC == nil {
 		return "Fitur workout belum dikonfigurasi wir 😅", nil
 	}
 
-	// Check if user wants monthly stats
-	lower := strings.ToLower(message)
+	cleanMsg := strings.TrimSpace(message)
+	lower := strings.ToLower(cleanMsg)
+
+	// 1. Cek apakah user ingin menghapus / membatalkan catatan workout
+	deleteKeywords := []string{"hapus", "delete", "batal", "cancel"}
+	isDelete := false
+	for _, kw := range deleteKeywords {
+		if strings.Contains(lower, kw) {
+			isDelete = true
+			break
+		}
+	}
+
+	if isDelete {
+		// A. Hapus workout terakhir / tadi
+		if strings.Contains(lower, "terakhir") || strings.Contains(lower, "tadi") || strings.Contains(lower, "last") || strings.Contains(lower, "latest") {
+			deleted, err := u.workoutUC.DeleteLatestWorkout(ctx)
+			if err != nil {
+				return "Belum ada riwayat workout yang bisa dihapus wir, atau catatan tidak ditemukan.", nil
+			}
+			return fmt.Sprintf("🗑️ *Workout terakhir berhasil dihapus wir!*\n\n• ID: *%d*\n• Aktivitas: *%s*\n• Tipe: %s", deleted.ID, deleted.Title, deleted.Type), nil
+		}
+
+		// B. Hapus berdasarkan ID angka (contoh: "hapus workout 5", "delete workout 12", "hapus 5")
+		numRegex := regexp.MustCompile(`\b(\d+)\b`)
+		matches := numRegex.FindStringSubmatch(lower)
+		if len(matches) > 1 {
+			if id, err := strconv.ParseInt(matches[1], 10, 64); err == nil && id > 0 {
+				deleted, err := u.workoutUC.DeleteWorkout(ctx, id)
+				if err != nil {
+					return fmt.Sprintf("Workout dengan ID %d tidak ditemukan wir 😅. Ketik *list workout* untuk mengecek ID yang valid.", id), nil
+				}
+				return fmt.Sprintf("🗑️ *Workout berhasil dihapus wir!*\n\n• ID: *%d*\n• Aktivitas: *%s*\n• Tipe: %s", deleted.ID, deleted.Title, deleted.Type), nil
+			}
+		}
+
+		// C. Jika user hanya mengetik "hapus workout" tanpa ID / spesifikasi
+		return "Buat menghapus catatan workout, sebutkan ID-nya (contoh: *hapus workout 5*) atau ketik *hapus workout terakhir*.\n\nKetik *list workout* untuk melihat daftar riwayat dan ID workoutmu ya wir! 🏋️", nil
+	}
+
+	// 2. Cek apakah user ingin melihat daftar/riwayat workout
+	listKeywords := []string{"list", "daftar", "riwayat", "history", "lihat", "show", "apa aja"}
+	for _, kw := range listKeywords {
+		if strings.Contains(lower, kw) {
+			workouts, err := u.workoutUC.GetRecentWorkouts(ctx, 10)
+			if err != nil {
+				return "", fmt.Errorf("get recent workouts: %w", err)
+			}
+			return FormatWorkoutList(workouts), nil
+		}
+	}
+
+	// 3. Cek apakah user ingin melihat statistik/rekap bulanan
 	statKeywords := []string{"statistik", "stats", "rekap", "laporan", "summary", "bulan ini", "total"}
 	for _, kw := range statKeywords {
 		if strings.Contains(lower, kw) {
@@ -228,11 +281,11 @@ func (u *chatUsecase) handleWorkout(ctx context.Context, message string) (string
 		}
 	}
 
-	// Otherwise, record a new workout from text
+	// 4. Jika bukan perintah list/delete/stats, catat sebagai workout baru
 	workout, err := u.workoutUC.RecordWorkoutFromText(ctx, message)
 	if err != nil {
-		u.logger.Error("failed to record workout from text", zap.Error(err))
-		return "Waduh, gagal catat workoutnya wir 😅. Coba tulis lebih detail ya, contoh: \"Gym push day 60 menit\" atau \"Jogging 5km 40 menit\".", nil
+		u.logger.Warn("message not parsed as workout", zap.String("message", message), zap.Error(err))
+		return "Waduh, pesanmu tidak terdeteksi sebagai aktivitas workout fisik wir 😅.\nContoh pencatatan: *\"Gym push day 60 menit\"* atau *\"Jogging 5km 40 menit\"*.\n\nUntuk melihat riwayat atau menghapus, ketik *list workout* atau *hapus workout terakhir*.", nil
 	}
 
 	return FormatWorkoutConfirmation(workout), nil

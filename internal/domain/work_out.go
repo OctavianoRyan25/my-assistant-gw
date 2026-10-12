@@ -59,6 +59,7 @@ type WorkoutRepository interface {
 	GetByID(ctx context.Context, id int64) (*Workout, error)
 	GetByDateRange(ctx context.Context, start, end time.Time) ([]*Workout, error)
 	GetMonthlyStats(ctx context.Context, year, month int) (*WorkoutMonthlyStats, error)
+	GetRecent(ctx context.Context, limit int) ([]*Workout, error)
 	Delete(ctx context.Context, id int64) error
 }
 
@@ -69,6 +70,9 @@ type WorkoutUsecase interface {
 	RecordWorkoutFromImage(ctx context.Context, imageData []byte, mimeType, caption string) (*Workout, error)
 	GetMonthlyStats(ctx context.Context, year, month int) (*WorkoutMonthlyStats, error)
 	GetCurrentMonthStats(ctx context.Context) (*WorkoutMonthlyStats, error)
+	GetRecentWorkouts(ctx context.Context, limit int) ([]*Workout, error)
+	DeleteWorkout(ctx context.Context, id int64) (*Workout, error)
+	DeleteLatestWorkout(ctx context.Context) (*Workout, error)
 	SendMonthlyReportIfDue(ctx context.Context) error
 }
 
