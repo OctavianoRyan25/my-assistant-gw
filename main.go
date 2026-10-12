@@ -57,10 +57,13 @@ func main() {
 	log.Info("database connected")
 
 	// ── 5. Repositories ──────────────────────────────────────────────────────
-	reminderRepo := repository.NewReminderRepository(db)
-	expenseRepo  := repository.NewExpenseRepository(db)
-	chatRepo     := repository.NewChatRepository(db)
-	memoryRepo   := repository.NewMemoryRepository(db)
+	reminderRepo  := repository.NewReminderRepository(db)
+	expenseRepo   := repository.NewExpenseRepository(db)
+	chatRepo      := repository.NewChatRepository(db)
+	memoryRepo    := repository.NewMemoryRepository(db)
+	nutritionRepo := repository.NewNutritionRepository(db)
+	userProfileRepo := repository.NewUserProfileRepository(db)
+	workoutRepo := repository.NewWorkoutRepository(db)
 
 	// ── 6. Infrastructure clients ─────────────────────────────────────────────
 	var llmClient domain.LLMClient
@@ -82,7 +85,22 @@ func main() {
 	// ── 7. Use cases (business logic) ────────────────────────────────────────
 	reminderUC := usecase.NewReminderUsecase(reminderRepo, llmClient, waSender, cfg.WAPhoneNumber, log, tz)
 	expenseUC  := usecase.NewExpenseUsecase(expenseRepo, waSender, cfg.WAPhoneNumber, log, tz)
-	chatUC     := usecase.NewChatUsecase(chatRepo, memoryRepo, llmClient, searchClient, reminderUC, expenseUC, log, tz)
+
+	// UserProfile usecase (diperlukan untuk menghitung target kalori harian dari TB & BB)
+	var nutritionParser domain.NutritionParser
+	if gClient, ok := llmClient.(domain.NutritionParser); ok {
+		nutritionParser = gClient
+	}
+	userProfileUC := usecase.NewUserProfileUsecase(userProfileRepo, log)
+	nutritionUC   := usecase.NewNutritionUsecase(nutritionRepo, userProfileUC, nutritionParser, log, tz)
+
+	var workoutParser domain.WorkoutParser
+	if gClient, ok := llmClient.(domain.WorkoutParser); ok {
+		workoutParser = gClient
+	}
+	workoutUC := usecase.NewWorkoutUsecase(workoutRepo, workoutParser, waSender, cfg.WAPhoneNumber, log, tz)
+
+	chatUC := usecase.NewChatUsecase(chatRepo, memoryRepo, llmClient, searchClient, reminderUC, expenseUC, nutritionUC, workoutUC, log, tz)
 
 	// ── 8. Register WhatsApp message handler ──────────────────────────────────
 	waSender.RegisterMessageHandler(chatUC)

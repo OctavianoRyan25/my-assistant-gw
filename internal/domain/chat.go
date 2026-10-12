@@ -19,6 +19,7 @@ const (
 	IntentSearch            = "search"
 	IntentGeneralChat       = "general_chat"
 	IntentReset             = "reset"
+	IntentReceipt           = "receipt"            // gambar struk belanja / nota
 	IntentReceiptCorrection = "receipt_correction" // user mengoreksi hasil scan struk
 	IntentWorkout           = "workout"            // pelaporan workout (teks/gambar) & statistik
 	IntentCalorie           = "calorie"            // perhitungan & logging kalori makanan
@@ -64,6 +65,8 @@ type LLMClient interface {
 	Chat(ctx context.Context, messages []ChatMessage) (string, error)
 	// ClassifyIntent uses a lightweight call to determine user intent.
 	ClassifyIntent(ctx context.Context, message string) (*IntentResult, error)
+	// CalsifyImageIntent determine user intent based on image.
+	ClassifyImageIntent(ctx context.Context, imageData []byte, mimeType string) (*IntentResult, error)
 	// ClasifyAudioIntent use a lightweight call to determine user intent based on audio.
 	ClassifyAudioIntent(ctx context.Context, audioData []byte, mimeType string) (*IntentResult, error)
 	// ParseReminder extracts a single reminder from natural language.

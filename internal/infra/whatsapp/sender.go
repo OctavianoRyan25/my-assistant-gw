@@ -426,10 +426,11 @@ func (s *WhatsAppClient) handleMenu(evt *events.Message) {
 	_ = s.client.SendChatPresence(ctx, evt.Info.Chat, types.ChatPresencePaused, types.ChatPresenceMediaText)
 
 	var sb strings.Builder
-	sb.WriteString("Halo wok, ini fitur yang sudah ente develop ya ")
+	sb.WriteString("Halo wok, ini fitur yang sudah ente develop ya \n")
 	sb.WriteString("-Chit chat(Bisa kirim pesan suara juga loh ya) \n")
 	sb.WriteString("-Reminder \n")
-	sb.WriteString("-Expense(Bisa kirim foto) \n")
+	sb.WriteString("-Expense(Bisa kirim foto struk) \n")
+	sb.WriteString("-Kalori(Kirim foto makanan untuk estimasi kalori & gizi) \n")
 	sb.WriteString("-Search \n")
 	sb.WriteString("-Reset \n")
 	sb.WriteString("Silakan pilih fitur dengan mengirim pesan sesuai dengan perintah ya\n")

@@ -26,6 +26,8 @@ type chatUsecase struct {
 	searchClient domain.SearchClient
 	reminderUC   domain.ReminderUsecase
 	expenseUC    domain.ExpenseUsecase
+	nutritionUC  domain.NutritionUsecase // untuk perhitungan kalori dari gambar makanan
+	workoutUC    domain.WorkoutUsecase
 	logger       *zap.Logger
 	timezone     *time.Location
 	receiptStore *receiptStateStore // pending receipt awaiting confirmation
@@ -39,6 +41,8 @@ func NewChatUsecase(
 	searchClient domain.SearchClient,
 	reminderUC domain.ReminderUsecase,
 	expenseUC domain.ExpenseUsecase,
+	nutritionUC domain.NutritionUsecase,
+	workoutUC   domain.WorkoutUsecase,
 	logger *zap.Logger,
 	timezone *time.Location,
 ) domain.ChatUsecase {
@@ -49,6 +53,8 @@ func NewChatUsecase(
 		searchClient: searchClient,
 		reminderUC:   reminderUC,
 		expenseUC:    expenseUC,
+		nutritionUC:  nutritionUC,
+		workoutUC:    workoutUC,
 		logger:       logger,
 		timezone:     timezone,
 		receiptStore: newReceiptStateStore(),
@@ -95,6 +101,8 @@ func (u *chatUsecase) HandleMessage(ctx context.Context, userMessage string) (st
 		reply, err = u.handleReminder(ctx, userMessage)
 	case domain.IntentExpense:
 		reply, err = u.handleExpense(ctx, userMessage)
+	case domain.IntentWorkout:
+		reply, err = u.handleWorkout(ctx, userMessage)
 	case domain.IntentSearch:
 		reply, err = u.handleSearch(ctx, userMessage)
 	case domain.IntentReset:
@@ -116,10 +124,53 @@ func (u *chatUsecase) HandleMessage(ctx context.Context, userMessage string) (st
 	return reply, nil
 }
 
-// HandleImageMessage processes an image sent via WhatsApp (e.g. a receipt photo).
+// HandleImageMessage processes an image sent via WhatsApp.
+// It first classifies the image intent (calorie/receipt/workout/general_chat),
+// then routes to the appropriate handler.
 func (u *chatUsecase) HandleImageMessage(ctx context.Context, imageData []byte, mimeType string, caption string) (string, error) {
-	u.logger.Info("receipt image received", zap.String("mimeType", mimeType), zap.Int("bytes", len(imageData)))
+	u.logger.Info("image received", zap.String("mimeType", mimeType), zap.Int("bytes", len(imageData)))
 
+	// Classify image intent using Gemini Vision
+	intent, err := u.llm.ClassifyImageIntent(ctx, imageData, mimeType)
+	if err != nil {
+		u.logger.Warn("image intent classification failed", zap.Error(err))
+		return "Waduh, gagal analisa gambarnya wir 😅. Coba kirim ulang dengan foto yang lebih jelas ya.", nil
+	}
+	u.logger.Info("image intent classified", zap.String("intent", intent.Intent), zap.Float64("confidence", intent.Confidence))
+
+	switch intent.Intent {
+	case domain.IntentCalorie:
+		return u.handleCalorieImage(ctx, imageData, mimeType, caption)
+	case domain.IntentWorkout:
+		return u.handleWorkoutImage(ctx, imageData, mimeType, caption)
+	case domain.IntentReceipt:
+		return u.handleReceiptImage(ctx, imageData, mimeType)
+	default:
+		// For general_chat or unknown, if there's a caption treat it as a message
+		if strings.TrimSpace(caption) != "" {
+			return u.handleGeneralChat(ctx, caption)
+		}
+		return "Gambar diterima wir, tapi gw belum bisa bantu banyak untuk jenis gambar ini 🤔. Kalau mau hitung kalori kirim foto makanan, atau struk belanja kalau mau catat pengeluaran.", nil
+	}
+}
+
+// handleCalorieImage processes a food image and logs the estimated calories.
+func (u *chatUsecase) handleCalorieImage(ctx context.Context, imageData []byte, mimeType, notes string) (string, error) {
+	if u.nutritionUC == nil {
+		return "Fitur hitung kalori belum dikonfigurasi wir 😅", nil
+	}
+
+	food, summary, err := u.nutritionUC.LogMealFromImage(ctx, imageData, mimeType, notes)
+	if err != nil {
+		u.logger.Error("failed to log meal from image", zap.Error(err))
+		return "Waduh, gagal analisa makanannya wir 😅. Pastikan foto makanan cukup jelas ya, atau coba kirim ulang.", nil
+	}
+
+	return FormatMealConfirmation(food, summary), nil
+}
+
+// handleReceiptImage processes a receipt/invoice image and records expense items.
+func (u *chatUsecase) handleReceiptImage(ctx context.Context, imageData []byte, mimeType string) (string, error) {
 	receipt, err := u.llm.ParseReceiptFromImage(ctx, imageData, mimeType)
 	if err != nil {
 		u.logger.Error("failed to parse receipt image", zap.Error(err))
@@ -142,6 +193,51 @@ func (u *chatUsecase) HandleImageMessage(ctx context.Context, imageData []byte, 
 	return FormatReceiptPreview(receipt), nil
 }
 
+// handleWorkoutImageFallback handles workout images — currently redirects user to text input
+// since WorkoutUsecase is not wired through chatUsecase.
+func (u *chatUsecase) handleWorkoutImage(ctx context.Context, imageData []byte, mimeType string, caption string) (string, error) {
+	if u.workoutUC == nil {
+		return "Fitur workoit belum dikonfigurasi wir 😅", nil
+	}
+
+	workout, err := u.workoutUC.RecordWorkoutFromImage(ctx, imageData, mimeType, caption)
+	if err != nil {
+		u.logger.Error("failed to log workout from image", zap.Error(err))
+		return "Waduh, gagal analisa workoutnya wir 😅. Pastikan foto workout cukup jelas ya, atau coba kirim ulang.", nil
+	}
+
+	return FormatWorkoutConfirmation(workout), nil
+}
+
+// handleWorkout processes workout-related text messages: recording a new workout or fetching stats.
+func (u *chatUsecase) handleWorkout(ctx context.Context, message string) (string, error) {
+	if u.workoutUC == nil {
+		return "Fitur workout belum dikonfigurasi wir 😅", nil
+	}
+
+	// Check if user wants monthly stats
+	lower := strings.ToLower(message)
+	statKeywords := []string{"statistik", "stats", "rekap", "laporan", "summary", "bulan ini", "total"}
+	for _, kw := range statKeywords {
+		if strings.Contains(lower, kw) {
+			stats, err := u.workoutUC.GetCurrentMonthStats(ctx)
+			if err != nil {
+				return "", fmt.Errorf("get workout stats: %w", err)
+			}
+			return FormatWorkoutReport(stats), nil
+		}
+	}
+
+	// Otherwise, record a new workout from text
+	workout, err := u.workoutUC.RecordWorkoutFromText(ctx, message)
+	if err != nil {
+		u.logger.Error("failed to record workout from text", zap.Error(err))
+		return "Waduh, gagal catat workoutnya wir 😅. Coba tulis lebih detail ya, contoh: \"Gym push day 60 menit\" atau \"Jogging 5km 40 menit\".", nil
+	}
+
+	return FormatWorkoutConfirmation(workout), nil
+}
+
 // HandleAudioMessage processes an audio message sent via WhatsApp (e.g. a voice note).
 func (u *chatUsecase) HandleAudioMessage(ctx context.Context, audioData []byte, mimeType string) (string, error) {
 	u.logger.Info("audio message received", zap.String("mimeType", mimeType), zap.Int("bytes", len(audioData)))
@@ -161,6 +257,8 @@ func (u *chatUsecase) HandleAudioMessage(ctx context.Context, audioData []byte, 
 		reply, err = u.handleReminder(ctx, intent.RawMessage)
 	case domain.IntentExpense:
 		reply, err = u.handleExpense(ctx, intent.RawMessage)
+	case domain.IntentWorkout:
+		reply, err = u.handleWorkout(ctx, intent.RawMessage)
 	case domain.IntentSearch:
 		reply, err = u.handleSearch(ctx, intent.RawMessage)
 	case domain.IntentReset:

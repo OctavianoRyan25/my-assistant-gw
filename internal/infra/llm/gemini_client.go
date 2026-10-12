@@ -199,6 +199,7 @@ Kembalikan HANYA JSON valid dengan format:
 Intent yang tersedia:
 - "reminder": user ingin membuat, melihat, mengubah, atau membatalkan reminder/jadwal
 - "expense": user ingin mencatat pengeluaran, atau menanyakan laporan pengeluaran
+- "workout": user melaporkan aktivitas olahraga (gym, lari, renang, dll) atau menanyakan statistik workout
 - "search": user menanyakan informasi terkini, berita, atau hal yang butuh info real-time
 - "reset": user ingin mereset/menghapus riwayat percakapan
 - "general_chat": percakapan umum, brainstorming, diskusi, atau hal lainnya
@@ -206,6 +207,9 @@ Intent yang tersedia:
 Contoh:
 - "ingatkan aku besok jam 8 meeting" → {"intent": "reminder", "confidence": 0.98}
 - "keluar 50rb buat makan" → {"intent": "expense", "confidence": 0.97}
+- "habis gym 60 menit, push day" → {"intent": "workout", "confidence": 0.97}
+- "tadi jogging 5km 40 menit" → {"intent": "workout", "confidence": 0.96}
+- "statistik workout bulan ini" → {"intent": "workout", "confidence": 0.95}
 - "berita AI hari ini apa?" → {"intent": "search", "confidence": 0.95}
 - "mulai obrolan baru" → {"intent": "reset", "confidence": 0.99}
 - "kamu bisa apa?" → {"intent": "general_chat", "confidence": 0.90}`
@@ -545,6 +549,126 @@ Aturan:
 	return &parsed, nil
 }
 
+func (c *geminiClient) ClassifyImageIntent(ctx context.Context, imageData []byte, mimeType string) (*domain.IntentResult, error) {
+	if mimeType == "" {
+		mimeType = "image/jpeg"
+	}
+
+	systemPrompt := `Kamu adalah classifier gambar. Analisa gambar yang dikirim pengguna dan tentukan intent-nya.
+Kembalikan HANYA JSON valid dengan format:
+{"intent": "<intent>", "confidence": <0.0-1.0>}
+
+Intent yang tersedia:
+- "calorie": gambar berisi makanan, minuman, atau hidangan yang ingin dihitung kalorinya
+- "workout": gambar berisi aktivitas olahraga, screenshot aplikasi fitness/gym, atau bukti workout
+- "receipt": gambar berisi struk belanja, nota, faktur, atau bukti pembayaran
+- "general_chat": gambar lain yang tidak termasuk kategori di atas
+
+Contoh:
+- (gambar nasi goreng) → {"intent": "calorie", "confidence": 0.97}
+- (gambar struk Indomaret) → {"intent": "receipt", "confidence": 0.98}
+- (screenshot Strava/lari) → {"intent": "workout", "confidence": 0.95}
+- (gambar selfie/pemandangan) → {"intent": "general_chat", "confidence": 0.85}`
+
+	b64 := base64.StdEncoding.EncodeToString(imageData)
+
+	reqBody := geminiRequest{
+		SystemInstruction: &geminiContent{
+			Parts: []geminiPart{{Text: systemPrompt}},
+		},
+		Contents: []geminiContent{
+			{
+				Role: "user",
+				Parts: []geminiPart{
+					{InlineData: &geminiInlineData{MimeType: mimeType, Data: b64}},
+					{Text: "Klasifikasikan isi gambar ini."},
+				},
+			},
+		},
+		GenerationConfig: &geminiGenerationConfig{
+			ResponseMimeType: "application/json",
+		},
+	}
+
+	resp, err := c.callAPI(ctx, reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	resp = cleanJSONResponse(resp)
+
+	var result domain.IntentResult
+	if err := json.Unmarshal([]byte(resp), &result); err != nil {
+		return &domain.IntentResult{Intent: domain.IntentGeneralChat, Confidence: 0.5}, nil
+	}
+	return &result, nil
+}
+
+// ParseMealFromImage uses Gemini Vision to estimate calories and macros from a food photo.
+func (c *geminiClient) ParseMealFromImage(ctx context.Context, imageData []byte, mimeType string) (*domain.MealParsed, error) {
+	if mimeType == "" {
+		mimeType = "image/jpeg"
+	}
+
+	systemPrompt := `Kamu adalah ahli gizi dan analisis makanan. Analisa gambar makanan yang dikirim dan estimasikan kandungan nutrisinya.
+
+Kembalikan JSON dengan format persis:
+{
+  "food_name": "<nama makanan/hidangan secara deskriptif>",
+  "estimated_calories": <estimasi kalori total dalam kcal, angka bulat>,
+  "protein": <estimasi protein dalam gram, 1 desimal>,
+  "carbs": <estimasi karbohidrat dalam gram, 1 desimal>,
+  "fat": <estimasi lemak dalam gram, 1 desimal>,
+  "portion_description": "<deskripsi porsi, contoh: '1 piring nasi + 1 potong ayam goreng'>",
+  "confidence": <tingkat keyakinan estimasi 0.0-1.0>,
+  "advice": "<saran singkat berkaitan makanan ini dari sudut pandang gizi, max 1 kalimat>"
+}
+
+Aturan:
+- estimated_calories, protein, carbs, fat harus berupa angka (bukan string).
+- Estimasi berdasarkan porsi yang terlihat di gambar (bukan porsi standar).
+- Jika gambar BUKAN makanan, kembalikan {"food_name":"","estimated_calories":0,"protein":0,"carbs":0,"fat":0,"portion_description":"","confidence":0,"advice":""}
+- Kembalikan HANYA JSON tanpa penjelasan apapun.`
+
+	b64 := base64.StdEncoding.EncodeToString(imageData)
+
+	reqBody := geminiRequest{
+		SystemInstruction: &geminiContent{
+			Parts: []geminiPart{{Text: systemPrompt}},
+		},
+		Contents: []geminiContent{
+			{
+				Role: "user",
+				Parts: []geminiPart{
+					{InlineData: &geminiInlineData{MimeType: mimeType, Data: b64}},
+					{Text: "Tolong analisa makanan di gambar ini dan estimasikan kandungan gizinya."},
+				},
+			},
+		},
+		GenerationConfig: &geminiGenerationConfig{
+			ResponseMimeType: "application/json",
+		},
+	}
+
+	resp, err := c.callAPI(ctx, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("gemini meal vision: %w", err)
+	}
+
+	resp = cleanJSONResponse(resp)
+
+	var parsed domain.MealParsed
+	if err := json.Unmarshal([]byte(resp), &parsed); err != nil {
+		return nil, fmt.Errorf("gemini meal parse JSON: %w (raw: %s)", err, resp)
+	}
+
+	if parsed.FoodName == "" || parsed.EstimatedCalories == 0 {
+		return nil, fmt.Errorf("gambar tidak mengandung makanan yang dapat dianalisa")
+	}
+
+	return &parsed, nil
+}
+
 func (c *geminiClient) ClassifyAudioIntent(ctx context.Context, audioData []byte, mimeType string) (*domain.IntentResult, error) {
 	// WhatsApp voice notes umumnya bertipe audio/ogg codecs=opus
 	if mimeType == "" {
@@ -558,6 +682,7 @@ Kembalikan HANYA JSON valid dengan format:
 Intent yang tersedia:
 - "reminder": user ingin membuat, melihat, mengubah, atau membatalkan reminder/jadwal
 - "expense": user ingin mencatat pengeluaran, atau menanyakan laporan pengeluaran
+- "workout": user melaporkan aktivitas olahraga (gym, lari, renang, dll) atau menanyakan statistik workout
 - "search": user menanyakan informasi terkini, berita, atau hal yang butuh info real-time
 - "reset": user ingin mereset/menghapus riwayat percakapan
 - "general_chat": percakapan umum, brainstorming, diskusi, atau hal lainnya
@@ -565,6 +690,8 @@ Intent yang tersedia:
 Contoh:
 - (audio: "ingatkan aku besok jam 8 meeting") → {"intent": "reminder", "confidence": 0.98, "raw_message": "ingatkan aku besok jam 8 meeting"}
 - (audio: "keluar 50rb buat makan") → {"intent": "expense", "confidence": 0.97, "raw_message": "keluar 50rb buat makan"}
+- (audio: "habis gym 60 menit, push day") → {"intent": "workout", "confidence": 0.97, "raw_message": "habis gym 60 menit, push day"}
+- (audio: "jogging 5km tadi pagi") → {"intent": "workout", "confidence": 0.96, "raw_message": "jogging 5km tadi pagi"}
 - (audio: hening/noise/tidak jelas) → {"intent": "general_chat", "confidence": 0.3, "raw_message": "Ora krungu njir, suaramu alon."}
 
 PENTING: raw_message harus transkrip asli ucapan pengguna (bahasa Indonesia, apa adanya), bukan jawaban atau respon kamu. Kalau audio tidak jelas/hening, isi raw_message dengan pesan "Ora krungu njir, suaramu alon." dan set intent ke "general_chat".`
@@ -603,8 +730,136 @@ PENTING: raw_message harus transkrip asli ucapan pengguna (bahasa Indonesia, apa
 	return &result, nil
 }
 
+// ParseWorkoutFromText extracts structured workout data from natural language using Gemini.
+func (c *geminiClient) ParseWorkoutFromText(ctx context.Context, message string) (*domain.WorkoutParsed, error) {
+	systemPrompt := `Kamu adalah parser aktivitas olahraga. Ekstrak informasi workout dari pesan pengguna.
+Kembalikan HANYA JSON valid dengan format:
+{
+  "title": "<judul singkat aktivitas, contoh: 'Gym Push Day', 'Jogging Pagi', 'Renang 1000m'>",
+  "type": "<gym|jogging|running|swimming|cycling|walking|hiit|other>",
+  "duration_minutes": <durasi dalam menit, angka bulat, 0 jika tidak disebutkan>,
+  "calories_burned": <estimasi kalori terbakar dalam kcal, angka bulat, 0 jika tidak disebutkan>,
+  "distance_meters": <jarak dalam meter, angka desimal, 0 jika tidak relevan>,
+  "description": "<deskripsi singkat latihan, termasuk detail set/rep jika disebutkan>"
+}
+
+Aturan:
+- type harus salah satu dari: gym, jogging, running, swimming, cycling, walking, hiit, other
+- duration_minutes, calories_burned, distance_meters harus angka (bukan string)
+- Konversi jarak: "5km" = 5000, "500m" = 500
+- Estimasi calories_burned jika tidak disebutkan berdasarkan tipe dan durasi (contoh: gym 60 menit ≈ 300 kcal, jogging 5km ≈ 350 kcal)
+- Kembalikan HANYA JSON tanpa teks pengantar atau markdown block`
+
+	reqBody := geminiRequest{
+		SystemInstruction: &geminiContent{
+			Parts: []geminiPart{{Text: systemPrompt}},
+		},
+		Contents: []geminiContent{
+			{
+				Role:  "user",
+				Parts: []geminiPart{{Text: message}},
+			},
+		},
+		GenerationConfig: &geminiGenerationConfig{
+			ResponseMimeType: "application/json",
+		},
+	}
+
+	resp, err := c.callAPI(ctx, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("gemini parse workout text: %w", err)
+	}
+
+	resp = cleanJSONResponse(resp)
+
+	var parsed domain.WorkoutParsed
+	if err := json.Unmarshal([]byte(resp), &parsed); err != nil {
+		return nil, fmt.Errorf("gemini workout parse JSON: %w (raw: %s)", err, resp)
+	}
+
+	if parsed.Title == "" && parsed.Type == "" {
+		return nil, fmt.Errorf("tidak dapat mengekstrak informasi workout dari pesan")
+	}
+	if parsed.Type == "" {
+		parsed.Type = domain.WorkoutTypeOther
+	}
+
+	return &parsed, nil
+}
+
+// ParseWorkoutFromImage extracts structured workout data from a workout photo or fitness app screenshot.
+func (c *geminiClient) ParseWorkoutFromImage(ctx context.Context, imageData []byte, mimeType, caption string) (*domain.WorkoutParsed, error) {
+	if mimeType == "" {
+		mimeType = "image/jpeg"
+	}
+
+	prompt := "Analisa gambar workout/olahraga ini dan ekstrak informasi aktivitasnya."
+	if caption != "" {
+		prompt = fmt.Sprintf("Analisa gambar workout ini. Caption dari pengirim: \"%s\". Ekstrak informasi aktivitasnya.", caption)
+	}
+
+	systemPrompt := `Kamu adalah parser aktivitas olahraga berbasis gambar. Analisa gambar yang dikirim (foto gym, screenshot Strava/Nike Run/fitness app, bukti olahraga, dll).
+Kembalikan HANYA JSON valid dengan format:
+{
+  "title": "<judul singkat aktivitas, contoh: 'Gym Push Day', 'Jogging Pagi', 'Renang 1000m'>",
+  "type": "<gym|jogging|running|swimming|cycling|walking|hiit|other>",
+  "duration_minutes": <durasi dalam menit, angka bulat, 0 jika tidak terbaca>,
+  "calories_burned": <kalori terbakar dalam kcal, angka bulat, 0 jika tidak terbaca>,
+  "distance_meters": <jarak dalam meter, angka desimal, 0 jika tidak relevan>,
+  "description": "<deskripsi singkat aktivitas atau detail yang terlihat di gambar>"
+}
+
+Aturan:
+- type harus salah satu dari: gym, jogging, running, swimming, cycling, walking, hiit, other
+- Baca data langsung dari gambar jika tersedia (screenshot app biasanya menampilkan durasi, kalori, jarak)
+- Jika gambar bukan tentang olahraga, kembalikan {"title":"","type":"other","duration_minutes":0,"calories_burned":0,"distance_meters":0,"description":""}
+- Kembalikan HANYA JSON tanpa teks pengantar apapun`
+
+	b64 := base64.StdEncoding.EncodeToString(imageData)
+
+	reqBody := geminiRequest{
+		SystemInstruction: &geminiContent{
+			Parts: []geminiPart{{Text: systemPrompt}},
+		},
+		Contents: []geminiContent{
+			{
+				Role: "user",
+				Parts: []geminiPart{
+					{InlineData: &geminiInlineData{MimeType: mimeType, Data: b64}},
+					{Text: prompt},
+				},
+			},
+		},
+		GenerationConfig: &geminiGenerationConfig{
+			ResponseMimeType: "application/json",
+		},
+	}
+
+	resp, err := c.callAPI(ctx, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("gemini workout vision: %w", err)
+	}
+
+	resp = cleanJSONResponse(resp)
+
+	var parsed domain.WorkoutParsed
+	if err := json.Unmarshal([]byte(resp), &parsed); err != nil {
+		return nil, fmt.Errorf("gemini workout image parse JSON: %w (raw: %s)", err, resp)
+	}
+
+	if parsed.Title == "" && parsed.DurationMinutes == 0 && parsed.CaloriesBurned == 0 {
+		return nil, fmt.Errorf("tidak dapat mendeteksi data workout dari gambar")
+	}
+	if parsed.Type == "" {
+		parsed.Type = domain.WorkoutTypeOther
+	}
+
+	return &parsed, nil
+}
+
 // callAPI sends a request to Google Gemini API and returns the generated text.
 func (c *geminiClient) callAPI(ctx context.Context, reqBody geminiRequest) (string, error) {
+
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", fmt.Errorf("gemini marshal request: %w", err)
