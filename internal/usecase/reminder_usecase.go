@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/OctavianoRyan25/my-assistant-gw/internal/domain"
@@ -60,11 +61,53 @@ func (u *reminderUsecase) ListActive(ctx context.Context) ([]*domain.Reminder, e
 
 // Cancel marks a reminder as cancelled.
 func (u *reminderUsecase) Cancel(ctx context.Context, id int64) error {
+	existing, err := u.repo.GetByID(ctx, id)
+	if err != nil {
+		return fmt.Errorf("cancel reminder %d: fetch: %w", id, err)
+	}
+	if existing == nil {
+		return fmt.Errorf("reminder %d not found", id)
+	}
+
 	if err := u.repo.UpdateStatus(ctx, id, domain.ReminderStatusCancelled); err != nil {
 		return fmt.Errorf("cancel reminder %d: %w", id, err)
 	}
 	u.logger.Info("reminder cancelled", zap.Int64("id", id))
 	return nil
+}
+
+// Delete permanently removes a reminder from the database.
+func (u *reminderUsecase) Delete(ctx context.Context, id int64) (*domain.Reminder, error) {
+	existing, err := u.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("delete reminder %d: fetch: %w", id, err)
+	}
+	if existing == nil {
+		return nil, fmt.Errorf("reminder %d not found", id)
+	}
+
+	if err := u.repo.Delete(ctx, id); err != nil {
+		return nil, fmt.Errorf("delete reminder %d: %w", id, err)
+	}
+	u.logger.Info("reminder deleted from database", zap.Int64("id", id), zap.String("title", existing.Title))
+	return existing, nil
+}
+
+// DeleteLatest permanently removes the most recently created reminder from the database.
+func (u *reminderUsecase) DeleteLatest(ctx context.Context) (*domain.Reminder, error) {
+	latest, err := u.repo.GetLatest(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("delete latest reminder: fetch: %w", err)
+	}
+	if latest == nil {
+		return nil, fmt.Errorf("no reminders found")
+	}
+
+	if err := u.repo.Delete(ctx, latest.ID); err != nil {
+		return nil, fmt.Errorf("delete latest reminder %d: %w", latest.ID, err)
+	}
+	u.logger.Info("latest reminder deleted from database", zap.Int64("id", latest.ID), zap.String("title", latest.Title))
+	return latest, nil
 }
 
 // Update modifies a reminder's title and schedule.
@@ -147,18 +190,21 @@ func FormatReminderList(reminders []*domain.Reminder) string {
 	if len(reminders) == 0 {
 		return "Tidak ada reminder aktif saat ini. 👌"
 	}
-	msg := "📋 *Reminder aktifmu:*\n\n"
+	var sb strings.Builder
+	sb.WriteString("📋 *Reminder aktifmu:*\n\n")
 	for i, r := range reminders {
 		recStr := "sekali"
-		if r.Recurrence != nil {
+		if r.Recurrence != nil && *r.Recurrence != "" {
 			recStr = *r.Recurrence
 		}
-		msg += fmt.Sprintf("%d. %s\n   ⏰ %s (%s)\n\n",
+		sb.WriteString(fmt.Sprintf("%d. [ID: %d] *%s*\n   ⏰ %s (%s)\n\n",
 			i+1,
+			r.ID,
 			r.Title,
 			r.ScheduledAt.Format("Mon, 02 Jan 2006 15:04 WIB"),
 			recStr,
-		)
+		))
 	}
-	return msg
+	sb.WriteString("_Ketik *hapus reminder <ID>* atau *hapus reminder terakhir* untuk menghapus._")
+	return strings.TrimSpace(sb.String())
 }

@@ -66,7 +66,7 @@ func (h *ReminderHandler) Create(c echo.Context) error {
 	return c.JSON(http.StatusCreated, echo.Map{"success": true, "data": reminder})
 }
 
-// Cancel cancels a reminder by ID.
+// Cancel cancels/deletes a reminder by ID.
 // DELETE /api/v1/reminders/:id
 func (h *ReminderHandler) Cancel(c echo.Context) error {
 	idStr := c.Param("id")
@@ -74,8 +74,9 @@ func (h *ReminderHandler) Cancel(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, echo.Map{"success": false, "error": "invalid id"})
 	}
-	if err := h.reminderUC.Cancel(c.Request().Context(), id); err != nil {
+	deleted, err := h.reminderUC.Delete(c.Request().Context(), id)
+	if err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{"success": false, "error": err.Error()})
 	}
-	return c.JSON(http.StatusOK, echo.Map{"success": true, "message": "reminder cancelled"})
+	return c.JSON(http.StatusOK, echo.Map{"success": true, "message": "reminder deleted", "data": deleted})
 }

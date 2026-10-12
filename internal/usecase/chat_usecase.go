@@ -480,10 +480,103 @@ func (u *chatUsecase) saveReceiptItems(ctx context.Context, receipt *domain.Rece
 
 // handleReminder parses and processes reminder-related messages.
 func (u *chatUsecase) handleReminder(ctx context.Context, message string) (string, error) {
-	// Check if user is asking to list reminders
+	cleanMsg := strings.TrimSpace(message)
+	lower := strings.ToLower(cleanMsg)
+
+	// 1. Cek apakah user ingin membatalkan atau menghapus reminder
+	deleteKeywords := []string{"batalkan", "batal", "cancel", "hapus", "delete"}
+	isDelete := false
+	for _, kw := range deleteKeywords {
+		if strings.Contains(lower, kw) {
+			isDelete = true
+			break
+		}
+	}
+
+	if isDelete {
+		// A. Hapus reminder terakhir / tadi
+		if strings.Contains(lower, "terakhir") || strings.Contains(lower, "tadi") || strings.Contains(lower, "last") || strings.Contains(lower, "latest") {
+			deleted, err := u.reminderUC.DeleteLatest(ctx)
+			if err != nil {
+				return "Belum ada reminder yang bisa dihapus wir, atau catatan tidak ditemukan.", nil
+			}
+			recStr := "sekali"
+			if deleted.Recurrence != nil && *deleted.Recurrence != "" {
+				recStr = *deleted.Recurrence
+			}
+			return fmt.Sprintf("🗑️ *Reminder terakhir berhasil dihapus dari database wir!*\n\n• ID: *%d*\n• Judul: *%s*\n• Jadwal: %s (%s)",
+				deleted.ID,
+				deleted.Title,
+				deleted.ScheduledAt.In(u.timezone).Format("Mon, 02 Jan 2006 15:04 WIB"),
+				recStr,
+			), nil
+		}
+
+		// B. Hapus berdasarkan ID angka (contoh: "hapus reminder 5", "batalkan reminder 2", "delete id 10")
+		numRegex := regexp.MustCompile(`\b(\d+)\b`)
+		matches := numRegex.FindStringSubmatch(lower)
+		if len(matches) > 1 {
+			if id, err := strconv.ParseInt(matches[1], 10, 64); err == nil && id > 0 {
+				deleted, err := u.reminderUC.Delete(ctx, id)
+				if err != nil {
+					return fmt.Sprintf("Reminder dengan ID %d tidak ditemukan di database wir 😅. Ketik *daftar reminder* untuk mengecek ID aktifmu.", id), nil
+				}
+				recStr := "sekali"
+				if deleted.Recurrence != nil && *deleted.Recurrence != "" {
+					recStr = *deleted.Recurrence
+				}
+				return fmt.Sprintf("🗑️ *Reminder berhasil dihapus dari database wir!*\n\n• ID: *%d*\n• Judul: *%s*\n• Jadwal: %s (%s)",
+					deleted.ID,
+					deleted.Title,
+					deleted.ScheduledAt.In(u.timezone).Format("Mon, 02 Jan 2006 15:04 WIB"),
+					recStr,
+				), nil
+			}
+		}
+
+		// C. Cek apakah user menyebutkan kata kunci judul reminder aktif
+		activeReminders, _ := u.reminderUC.ListActive(ctx)
+		if len(activeReminders) > 0 {
+			searchQuery := lower
+			for _, kw := range []string{"batalkan", "batal", "cancel", "hapus", "delete", "reminder", "jadwal", "yang", "tolong", "dong", "wir"} {
+				searchQuery = strings.ReplaceAll(searchQuery, kw, "")
+			}
+			searchQuery = strings.TrimSpace(searchQuery)
+
+			if len(searchQuery) >= 3 {
+				var matched []*domain.Reminder
+				for _, r := range activeReminders {
+					if strings.Contains(strings.ToLower(r.Title), searchQuery) {
+						matched = append(matched, r)
+					}
+				}
+				if len(matched) == 1 {
+					deleted, err := u.reminderUC.Delete(ctx, matched[0].ID)
+					if err == nil {
+						recStr := "sekali"
+						if deleted.Recurrence != nil && *deleted.Recurrence != "" {
+							recStr = *deleted.Recurrence
+						}
+						return fmt.Sprintf("🗑️ *Reminder berhasil dihapus dari database wir!*\n\n• ID: *%d*\n• Judul: *%s*\n• Jadwal: %s (%s)",
+							deleted.ID,
+							deleted.Title,
+							deleted.ScheduledAt.In(u.timezone).Format("Mon, 02 Jan 2006 15:04 WIB"),
+							recStr,
+						), nil
+					}
+				}
+			}
+
+			return "Untuk menghapus reminder, sebutkan ID-nya (contoh: *hapus reminder 5*) atau ketik *hapus reminder terakhir*.\n\n" + FormatReminderList(activeReminders), nil
+		}
+
+		return "Saat ini tidak ada reminder aktif yang bisa dihapus wir.", nil
+	}
+
+	// 2. Check if user is asking to list reminders
 	listKeywords := []string{"daftar", "list", "apa aja", "aktif", "lihat"}
 	for _, kw := range listKeywords {
-		if strings.Contains(strings.ToLower(message), kw) {
+		if strings.Contains(lower, kw) {
 			reminders, err := u.reminderUC.ListActive(ctx)
 			if err != nil {
 				return "", err
@@ -492,15 +585,7 @@ func (u *chatUsecase) handleReminder(ctx context.Context, message string) (strin
 		}
 	}
 
-	// Check if user wants to cancel a reminder
-	cancelKeywords := []string{"batalkan", "cancel", "hapus", "delete"}
-	for _, kw := range cancelKeywords {
-		if strings.Contains(strings.ToLower(message), kw) {
-			return "Buat cancel reminder, sebutkan ID-nya wok. Ketik \"daftar reminder\" dulu untuk lihat ID reminder aktifmu. Biar gw atur pembatalannya😅", nil
-		}
-	}
-
-	// Parse one or more reminders from natural language
+	// 3. Parse one or more reminders from natural language
 	parsed, err := u.llm.ParseReminders(ctx, message)
 	if err != nil {
 		return "", fmt.Errorf("parse reminder: %w", err)
@@ -528,7 +613,8 @@ func (u *chatUsecase) handleReminder(ctx context.Context, message string) (strin
 		if reminder.Recurrence != nil && *reminder.Recurrence != "" {
 			recStr = *reminder.Recurrence
 		}
-		lines = append(lines, fmt.Sprintf("📌 *%s*\n   ⏰ %s (%s)",
+		lines = append(lines, fmt.Sprintf("📌 [ID: %d] *%s*\n   ⏰ %s (%s)",
+			reminder.ID,
 			reminder.Title,
 			reminder.ScheduledAt.Format("Mon, 02 Jan 2006 15:04 WIB"),
 			recStr,

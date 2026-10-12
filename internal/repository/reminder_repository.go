@@ -47,6 +47,12 @@ func (r *reminderRepository) GetByID(ctx context.Context, id int64) (*domain.Rem
 	return scanReminder(row)
 }
 
+func (r *reminderRepository) GetLatest(ctx context.Context) (*domain.Reminder, error) {
+	query := `SELECT id, title, scheduled_at, recurrence, status, created_at, updated_at FROM reminders ORDER BY id DESC LIMIT 1`
+	row := r.db.QueryRowContext(ctx, query)
+	return scanReminder(row)
+}
+
 func (r *reminderRepository) GetAllActive(ctx context.Context) ([]*domain.Reminder, error) {
 	query := `SELECT id, title, scheduled_at, recurrence, status, created_at, updated_at FROM reminders WHERE status = 'active' ORDER BY scheduled_at ASC`
 	rows, err := r.db.QueryContext(ctx, query)

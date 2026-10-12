@@ -100,6 +100,8 @@ CONTOH YANG BENAR:
 - User: "Besok ada agenda apa?"
   Bot: "Jadwal lo padet bgt njir besok, ada miting jam 10 sama jam 2 siang loh ya."
 
+- Jangan mengarang bahwa aksi database sudah dilakukan jika kamu di dalam obrolan umum; jika user ingin catat/hapus data, arahkan memakai perintah yang tepat.
+
 Waktu server: ` + time.Now().Format("Monday, 02 January 2006 15:04 WIB")
 
 	var extraSystem []string
@@ -197,7 +199,7 @@ Kembalikan HANYA JSON valid dengan format:
 {"intent": "<intent>", "confidence": <0.0-1.0>}
 
 Intent yang tersedia:
-- "reminder": user ingin membuat, melihat, mengubah, atau membatalkan reminder/jadwal
+- "reminder": user ingin membuat, melihat, mengubah, membatalkan, atau menghapus reminder/jadwal
 - "expense": user ingin mencatat pengeluaran, atau menanyakan laporan pengeluaran
 - "workout": user melaporkan aktivitas olahraga (gym, lari, renang, dll), melihat daftar/riwayat/statistik workout, atau menghapus catatan workout
 - "search": user menanyakan informasi terkini, berita, atau hal yang butuh info real-time
@@ -206,6 +208,10 @@ Intent yang tersedia:
 
 Contoh:
 - "ingatkan aku besok jam 8 meeting" → {"intent": "reminder", "confidence": 0.98}
+- "daftar reminder" → {"intent": "reminder", "confidence": 0.98}
+- "hapus reminder 5" → {"intent": "reminder", "confidence": 0.98}
+- "batalkan reminder 2" → {"intent": "reminder", "confidence": 0.98}
+- "hapus reminder terakhir" → {"intent": "reminder", "confidence": 0.97}
 - "keluar 50rb buat makan" → {"intent": "expense", "confidence": 0.97}
 - "habis gym 60 menit, push day" → {"intent": "workout", "confidence": 0.97}
 - "tadi jogging 5km 40 menit" → {"intent": "workout", "confidence": 0.96}
@@ -684,7 +690,7 @@ Kembalikan HANYA JSON valid dengan format:
 {"intent": "<intent>", "confidence": <0.0-1.0>, "raw_message": "<transkrip isi ucapan pengguna>"}
 
 Intent yang tersedia:
-- "reminder": user ingin membuat, melihat, mengubah, atau membatalkan reminder/jadwal
+- "reminder": user ingin membuat, melihat, mengubah, membatalkan, atau menghapus reminder/jadwal
 - "expense": user ingin mencatat pengeluaran, atau menanyakan laporan pengeluaran
 - "workout": user melaporkan aktivitas olahraga (gym, lari, renang, dll), melihat daftar/riwayat/statistik workout, atau menghapus catatan workout
 - "search": user menanyakan informasi terkini, berita, atau hal yang butuh info real-time
@@ -693,6 +699,7 @@ Intent yang tersedia:
 
 Contoh:
 - (audio: "ingatkan aku besok jam 8 meeting") → {"intent": "reminder", "confidence": 0.98, "raw_message": "ingatkan aku besok jam 8 meeting"}
+- (audio: "hapus reminder 1") → {"intent": "reminder", "confidence": 0.98, "raw_message": "hapus reminder 1"}
 - (audio: "keluar 50rb buat makan") → {"intent": "expense", "confidence": 0.97, "raw_message": "keluar 50rb buat makan"}
 - (audio: "habis gym 60 menit, push day") → {"intent": "workout", "confidence": 0.97, "raw_message": "habis gym 60 menit, push day"}
 - (audio: "jogging 5km tadi pagi") → {"intent": "workout", "confidence": 0.96, "raw_message": "jogging 5km tadi pagi"}

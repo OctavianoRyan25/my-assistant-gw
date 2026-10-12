@@ -34,6 +34,7 @@ type Reminder struct {
 type ReminderRepository interface {
 	Create(ctx context.Context, reminder *Reminder) error
 	GetByID(ctx context.Context, id int64) (*Reminder, error)
+	GetLatest(ctx context.Context) (*Reminder, error)
 	GetAllActive(ctx context.Context) ([]*Reminder, error)
 	UpdateStatus(ctx context.Context, id int64, status string) error
 	Update(ctx context.Context, reminder *Reminder) error
@@ -46,6 +47,8 @@ type ReminderUsecase interface {
 	CreateReminder(ctx context.Context, title string, scheduledAt time.Time, recurrence *string) (*Reminder, error)
 	ListActive(ctx context.Context) ([]*Reminder, error)
 	Cancel(ctx context.Context, id int64) error
+	Delete(ctx context.Context, id int64) (*Reminder, error)
+	DeleteLatest(ctx context.Context) (*Reminder, error)
 	Update(ctx context.Context, id int64, title string, scheduledAt time.Time) (*Reminder, error)
 	ProcessDueReminders(ctx context.Context) error
 }
