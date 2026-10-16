@@ -40,4 +40,5 @@ func RegisterRoutes(e *echo.Echo, h *Handlers) {
 	expenses := api.Group("/expenses")
 	expenses.POST("", h.ExpenseHandler.Record)
 	expenses.GET("/report", h.ExpenseHandler.GetMonthlyReport)
+	expenses.GET("/detail", h.ExpenseHandler.GetDetailMonthlyReport)
 }

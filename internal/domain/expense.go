@@ -13,6 +13,7 @@ const (
 	CategoryHealth        = "kesehatan"
 	CategoryShopping      = "belanja"
 	CategoryBill          = "tagihan"
+	CategoryCharity       = "amal"
 	CategoryOther         = "lainnya"
 )
 
@@ -48,6 +49,8 @@ type ExpenseRepository interface {
 type ExpenseUsecase interface {
 	RecordExpense(ctx context.Context, amount float64, category, description string, occurredAt time.Time) (*Expense, error)
 	GetMonthlyReport(ctx context.Context, year, month int) (*ExpenseReport, error)
+	GetDetailMonthlyReport(ctx context.Context, year, month int) ([]*Expense, error)
+	GetDetailMonthReportByCategory(ctx context.Context, year, month int, category string) ([]*Expense, error)
 	GetCurrentMonthReport(ctx context.Context) (*ExpenseReport, error)
 	SendMonthlyReportIfDue(ctx context.Context) error
 	DeleteExpense(ctx context.Context, id int64) error

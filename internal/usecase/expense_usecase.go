@@ -125,6 +125,89 @@ func FormatExpenseReport(report *domain.ExpenseReport) string {
 	return sb.String()
 }
 
+// GetDetailMonthlyReport returns detailed expense data for a specific month.
+func (u *expenseUsecase) GetDetailMonthlyReport(ctx context.Context, year, month int) ([]*domain.Expense, error) {
+	start := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, u.timezone)
+	end := start.AddDate(0, 1, 0).Add(-time.Second)
+	return u.repo.GetByDateRange(ctx, start, end)
+}
+
+// GetDetailMonthReportByCategory returns detailed expense data for a specific month filtered by category.
+func (u *expenseUsecase) GetDetailMonthReportByCategory(ctx context.Context, year, month int, category string) ([]*domain.Expense, error) {
+	expenses, err := u.GetDetailMonthlyReport(ctx, year, month)
+	if err != nil {
+		return nil, err
+	}
+
+	targetCat := NormalizeExpenseCategory(category)
+	var filtered []*domain.Expense
+	for _, exp := range expenses {
+		if NormalizeExpenseCategory(exp.Category) == targetCat || strings.EqualFold(exp.Category, category) {
+			filtered = append(filtered, exp)
+		}
+	}
+	return filtered, nil
+}
+
+// NormalizeExpenseCategory maps category synonyms or variations to canonical domain categories.
+func NormalizeExpenseCategory(cat string) string {
+	c := strings.ToLower(strings.TrimSpace(cat))
+	switch c {
+	case "makanan", "makan", "food", "kuliner":
+		return domain.CategoryFood
+	case "transportasi", "transport", "ojol", "bensin", "parkir":
+		return domain.CategoryTransport
+	case "hiburan", "entertainment", "game", "nonton", "bioskop":
+		return domain.CategoryEntertainment
+	case "kesehatan", "health", "obat", "dokter", "medis":
+		return domain.CategoryHealth
+	case "belanja", "shopping", "groceries":
+		return domain.CategoryShopping
+	case "tagihan", "bill", "bills", "listrik", "air", "wifi", "pulsa":
+		return domain.CategoryBill
+	case "amal", "charity", "sedekah", "infaq", "donasi":
+		return domain.CategoryCharity
+	case "lainnya", "other", "others":
+		return domain.CategoryOther
+	default:
+		return c
+	}
+}
+
+// FormatDetailExpenseList formats a list of expenses into a detailed WA message.
+func FormatDetailExpenseList(expenses []*domain.Expense, period string, category string) string {
+	if len(expenses) == 0 {
+		if category != "" {
+			return fmt.Sprintf("Belum ada catatan pengeluaran untuk kategori *%s* pada periode %s nih wir! 💸", category, period)
+		}
+		return fmt.Sprintf("Belum ada catatan pengeluaran pada periode %s nih wir! 💸", period)
+	}
+
+	var sb strings.Builder
+	if category != "" {
+		sb.WriteString(fmt.Sprintf("📋 *Detail Pengeluaran %s (%s)*\n\n", strings.Title(category), period))
+	} else {
+		sb.WriteString(fmt.Sprintf("📋 *Daftar Seluruh Pengeluaran (%s)*\n\n", period))
+	}
+
+	var total float64
+	for i, exp := range expenses {
+		total += exp.Amount
+		dateStr := exp.OccurredAt.Format("02 Jan 15:04")
+		sb.WriteString(fmt.Sprintf("%d. [%s] *%s*\n   • Kategori: %s\n   • Jumlah: Rp %s (ID: %d)\n",
+			i+1,
+			dateStr,
+			exp.Description,
+			exp.Category,
+			formatRupiah(exp.Amount),
+			exp.ID,
+		))
+	}
+
+	sb.WriteString(fmt.Sprintf("\n💰 *Total: Rp %s* (%d transaksi)", formatRupiah(total), len(expenses)))
+	return sb.String()
+}
+
 // FormatExpenseConfirmation returns a short confirmation message after recording.
 func FormatExpenseConfirmation(expense *domain.Expense) string {
 	return fmt.Sprintf("✅ Pengeluaran dicatat!\n• %s\n• Kategori: %s\n• Jumlah: Rp %s\n Jangan boros-boros loh ya😹 cari duid susah",

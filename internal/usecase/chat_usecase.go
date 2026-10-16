@@ -737,25 +737,46 @@ func (u *chatUsecase) handleExpense(ctx context.Context, message string) (string
 		return "Untuk menghapus pengeluaran, sebutkan ID-nya (contoh: *hapus pengeluaran 5*).\nKetik *list pengeluaran* untuk melihat daftar ID dulu ya wir! 💸", nil
 	}
 
-	// ── 2. Deteksi intent LIST / LIHAT daftar pengeluaran ──────────────────
-	// Keyword tunggal yang cukup spesifik, TIDAK perlu kombinasi.
+	// ── 2. Deteksi intent LIST / DETAIL / LIHAT daftar pengeluaran ──────────────────
 	listKeywords := []string{
 		"list pengeluaran", "daftar pengeluaran", "lihat pengeluaran", "show pengeluaran",
 		"riwayat pengeluaran", "history pengeluaran", "transaksi terakhir",
 		"pengeluaran apa aja", "pengeluaran apa saja", "catatan pengeluaran",
-		"list expense", "daftar expense",
+		"list expense", "daftar expense", "detail pengeluaran", "rincian pengeluaran",
 	}
+
+	now := time.Now().In(u.timezone)
+	targetYear, targetMonth, periodStr := ParseExpenseTargetPeriod(lowerMsg, now)
+	detectedCat := detectExpenseCategory(lowerMsg)
+	isPastPeriod := targetYear != now.Year() || targetMonth != int(now.Month())
+
+	wantsList := false
 	for _, kw := range listKeywords {
 		if strings.Contains(lowerMsg, kw) {
-			report, err := u.expenseUC.GetCurrentMonthReport(ctx)
+			wantsList = true
+			break
+		}
+	}
+	if !wantsList && (expenseContextPresent || strings.Contains(lowerMsg, "biaya")) {
+		wantsList = strings.Contains(lowerMsg, "detail") || strings.Contains(lowerMsg, "rincian")
+	}
+
+	if wantsList {
+		if detectedCat != "" {
+			expenses, err := u.expenseUC.GetDetailMonthReportByCategory(ctx, targetYear, targetMonth, detectedCat)
 			if err != nil {
 				return "", err
 			}
-			return FormatExpenseReport(report), nil
+			return FormatDetailExpenseList(expenses, periodStr, detectedCat), nil
 		}
+		expenses, err := u.expenseUC.GetDetailMonthlyReport(ctx, targetYear, targetMonth)
+		if err != nil {
+			return "", err
+		}
+		return FormatDetailExpenseList(expenses, periodStr, ""), nil
 	}
 
-	// ── 3. Deteksi intent LAPORAN / REKAP / SUMMARY ─────────────────────────
+	// ── 3. Deteksi intent LAPORAN / REKAP / SUMMARY DAN APAKAH USER MENYURUH MENGEMBALIKAN DETAIL NYA ─────────────────────────
 	expenseReportContext := strings.Contains(lowerMsg, "laporan") ||
 		strings.Contains(lowerMsg, "rekap") ||
 		strings.Contains(lowerMsg, "summary") ||
@@ -763,9 +784,26 @@ func (u *chatUsecase) handleExpense(ctx context.Context, message string) (string
 		strings.Contains(lowerMsg, "pengeluaran bulan") ||
 		strings.Contains(lowerMsg, "total pengeluaran") ||
 		strings.Contains(lowerMsg, "habis berapa") ||
-		(strings.Contains(lowerMsg, "berapa") && (strings.Contains(lowerMsg, "pengeluaran") || strings.Contains(lowerMsg, "habis") || strings.Contains(lowerMsg, "keluar") || strings.Contains(lowerMsg, "belanja")))
+		(strings.Contains(lowerMsg, "berapa") && (strings.Contains(lowerMsg, "pengeluaran") || strings.Contains(lowerMsg, "habis") || strings.Contains(lowerMsg, "keluar") || strings.Contains(lowerMsg, "belanja"))) ||
+		((expenseContextPresent || strings.Contains(lowerMsg, "pengeluaran")) && isPastPeriod)
 	if expenseReportContext {
-		report, err := u.expenseUC.GetCurrentMonthReport(ctx)
+		// Jika meminta kategori spesifik atau ada kata kunci detail/rincian
+		if detectedCat != "" {
+			expenses, err := u.expenseUC.GetDetailMonthReportByCategory(ctx, targetYear, targetMonth, detectedCat)
+			if err != nil {
+				return "", err
+			}
+			return FormatDetailExpenseList(expenses, periodStr, detectedCat), nil
+		}
+		if strings.Contains(lowerMsg, "detail") || strings.Contains(lowerMsg, "rincian") {
+			expenses, err := u.expenseUC.GetDetailMonthlyReport(ctx, targetYear, targetMonth)
+			if err != nil {
+				return "", err
+			}
+			return FormatDetailExpenseList(expenses, periodStr, ""), nil
+		}
+
+		report, err := u.expenseUC.GetMonthlyReport(ctx, targetYear, targetMonth)
 		if err != nil {
 			return "", err
 		}
@@ -793,6 +831,112 @@ func (u *chatUsecase) handleExpense(ctx context.Context, message string) (string
 	}
 
 	return FormatExpenseConfirmation(expense), nil
+}
+
+// detectExpenseCategory checks if the message mentions a known expense category.
+func detectExpenseCategory(msg string) string {
+	lower := strings.ToLower(msg)
+	categories := []struct {
+		keywords []string
+		category string
+	}{
+		{[]string{"makanan", "makan", "kuliner", "food"}, domain.CategoryFood},
+		{[]string{"transportasi", "transport", "ojol", "bensin", "parkir"}, domain.CategoryTransport},
+		{[]string{"hiburan", "entertainment", "game", "nonton", "bioskop"}, domain.CategoryEntertainment},
+		{[]string{"kesehatan", "obat", "dokter", "health", "medis"}, domain.CategoryHealth},
+		{[]string{"belanja", "shopping", "groceries"}, domain.CategoryShopping},
+		{[]string{"tagihan", "bill", "listrik", "air", "wifi", "pulsa"}, domain.CategoryBill},
+		{[]string{"amal", "sedekah", "infaq", "donasi", "charity"}, domain.CategoryCharity},
+		{[]string{"lainnya"}, domain.CategoryOther},
+	}
+	for _, item := range categories {
+		for _, kw := range item.keywords {
+			if strings.Contains(lower, kw) {
+				return item.category
+			}
+		}
+	}
+	return ""
+}
+
+var idMonthNames = []string{
+	"", "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+	"Juli", "Agustus", "September", "Oktober", "November", "Desember",
+}
+
+var expenseYearRegex = regexp.MustCompile(`\b(20\d{2})\b`)
+
+// ParseExpenseTargetPeriod extracts the target year, month, and formatted period string from message.
+// Defaults to current month if not specified.
+func ParseExpenseTargetPeriod(lowerMsg string, now time.Time) (year int, month int, periodStr string) {
+	year = now.Year()
+	month = int(now.Month())
+
+	// 1. Cek tahun spesifik (contoh: 2025, 2026)
+	if match := expenseYearRegex.FindStringSubmatch(lowerMsg); len(match) > 1 {
+		if y, err := strconv.Atoi(match[1]); err == nil && y >= 2000 && y <= 2100 {
+			year = y
+		}
+	}
+
+	// 2. Cek frasa relatif: bulan lalu / kemarin / last month
+	if strings.Contains(lowerMsg, "bulan lalu") ||
+		strings.Contains(lowerMsg, "bln lalu") ||
+		strings.Contains(lowerMsg, "bulan kemarin") ||
+		strings.Contains(lowerMsg, "bln kemarin") ||
+		strings.Contains(lowerMsg, "last month") {
+		prev := now.AddDate(0, -1, 0)
+		year = prev.Year()
+		month = int(prev.Month())
+	} else if strings.Contains(lowerMsg, "2 bulan lalu") || strings.Contains(lowerMsg, "dua bulan lalu") {
+		prev := now.AddDate(0, -2, 0)
+		year = prev.Year()
+		month = int(prev.Month())
+	} else {
+		// 3. Cek nama bulan eksplisit (Januari - Desember)
+		monthMap := []struct {
+			m        int
+			patterns []string
+		}{
+			{1, []string{"januari", "january", "jan"}},
+			{2, []string{"februari", "february", "feb"}},
+			{3, []string{"maret", "march", "mar"}},
+			{4, []string{"april", "apr"}},
+			{5, []string{"mei", "may"}},
+			{6, []string{"juni", "june", "jun"}},
+			{7, []string{"juli", "july", "jul"}},
+			{8, []string{"agustus", "august", "agt", "ags", "aug"}},
+			{9, []string{"september", "sept", "sep"}},
+			{10, []string{"oktober", "october", "okt", "oct"}},
+			{11, []string{"november", "nov"}},
+			{12, []string{"desember", "december", "des", "dec"}},
+		}
+
+		foundMonth := 0
+		for _, entry := range monthMap {
+			for _, pat := range entry.patterns {
+				re := regexp.MustCompile(`\b` + regexp.QuoteMeta(pat) + `\b`)
+				if re.MatchString(lowerMsg) {
+					foundMonth = entry.m
+					break
+				}
+			}
+			if foundMonth > 0 {
+				break
+			}
+		}
+
+		if foundMonth > 0 {
+			month = foundMonth
+			hasExplicitYear := expenseYearRegex.MatchString(lowerMsg)
+			if !hasExplicitYear && month > int(now.Month()) {
+				year = now.Year() - 1
+			}
+		}
+	}
+
+	periodStr = fmt.Sprintf("%s %d", idMonthNames[month], year)
+	return year, month, periodStr
 }
 
 // handleSearch performs a web search and directly returns Tavily's synthesized answer.

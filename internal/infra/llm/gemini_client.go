@@ -471,7 +471,7 @@ func (c *geminiClient) ParseExpense(ctx context.Context, message string) (amount
 Kembalikan HANYA JSON valid:
 {"amount": <angka dalam rupiah>, "category": "<kategori>", "description": "<deskripsi singkat>"}
 
-Kategori yang tersedia: makan, transport, hiburan, kesehatan, belanja, tagihan, lainnya
+Kategori yang tersedia: makan, transport, hiburan, kesehatan, belanja, tagihan, amal, lainnya
 
 ATURAN PENTING:
 - amount harus angka (bukan string), dalam rupiah. "50rb" = 50000, "1.5jt" = 1500000, "25k" = 25000

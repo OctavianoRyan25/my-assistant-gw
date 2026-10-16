@@ -35,7 +35,7 @@ services:
       - --innodb-log-buffer-size=16M
       - --max-connections=50
     healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      test: ["CMD", "healthcheck.sh", "--connect"]
       interval: 10s
       timeout: 5s
       retries: 5

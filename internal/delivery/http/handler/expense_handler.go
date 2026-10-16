@@ -81,3 +81,44 @@ func (h *ExpenseHandler) GetMonthlyReport(c echo.Context) error {
 	}
 	return c.JSON(http.StatusOK, echo.Map{"success": true, "data": report, "formatted": usecase.FormatExpenseReport(report)})
 }
+
+// GetDetailMonthlyReport returns detailed expense list for a given month, optionally filtered by category.
+// GET /api/v1/expenses/detail?year=2026&month=10&category=makan
+func (h *ExpenseHandler) GetDetailMonthlyReport(c echo.Context) error {
+	now := time.Now().In(h.timezone)
+	year := now.Year()
+	month := int(now.Month())
+
+	if y := c.QueryParam("year"); y != "" {
+		if parsed, err := strconv.Atoi(y); err == nil {
+			year = parsed
+		}
+	}
+	if m := c.QueryParam("month"); m != "" {
+		if parsed, err := strconv.Atoi(m); err == nil && parsed >= 1 && parsed <= 12 {
+			month = parsed
+		}
+	}
+
+	category := c.QueryParam("category")
+	var expenses []*domain.Expense
+	var err error
+
+	if category != "" {
+		expenses, err = h.expenseUC.GetDetailMonthReportByCategory(c.Request().Context(), year, month, category)
+	} else {
+		expenses, err = h.expenseUC.GetDetailMonthlyReport(c.Request().Context(), year, month)
+	}
+
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{"success": false, "error": err.Error()})
+	}
+
+	period := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, h.timezone).Format("January 2006")
+	return c.JSON(http.StatusOK, echo.Map{
+		"success":   true,
+		"data":      expenses,
+		"total":     len(expenses),
+		"formatted": usecase.FormatDetailExpenseList(expenses, period, category),
+	})
+}
