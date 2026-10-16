@@ -296,9 +296,24 @@ func (u *chatUsecase) handleWorkout(ctx context.Context, message string) (string
 	}
 
 	// 2. Cek apakah user ingin melihat daftar/riwayat workout
-	listKeywords := []string{"list", "daftar", "riwayat", "history", "lihat", "show", "apa aja"}
-	for _, kw := range listKeywords {
+	// Gunakan frasa spesifik agar tidak false-positive pada kata umum "lihat"
+	workoutListPhrases := []string{
+		"list workout", "daftar workout", "riwayat workout", "history workout",
+		"lihat workout", "show workout", "workout apa aja", "workout apa saja",
+		"catatan workout", "log workout",
+	}
+	for _, kw := range workoutListPhrases {
 		if strings.Contains(lower, kw) {
+			workouts, err := u.workoutUC.GetRecentWorkouts(ctx, 10)
+			if err != nil {
+				return "", fmt.Errorf("get recent workouts: %w", err)
+			}
+			return FormatWorkoutList(workouts), nil
+		}
+	}
+	// Fallback kata tunggal yang sudah cukup eksplisit
+	for _, kw := range []string{"list", "daftar", "riwayat", "history"} {
+		if lower == kw || lower == kw+" workout" || lower == kw+" olahraga" || lower == kw+" latihan" {
 			workouts, err := u.workoutUC.GetRecentWorkouts(ctx, 10)
 			if err != nil {
 				return "", fmt.Errorf("get recent workouts: %w", err)
@@ -624,9 +639,24 @@ func (u *chatUsecase) handleReminder(ctx context.Context, message string) (strin
 	}
 
 	// 2. Check if user is asking to list reminders
-	listKeywords := []string{"daftar", "list", "apa aja", "aktif", "lihat"}
-	for _, kw := range listKeywords {
+	// Pakai frasa spesifik agar tidak false-positive terhadap kata umum seperti "lihat"
+	reminderListKeywords := []string{
+		"daftar reminder", "list reminder", "lihat reminder", "show reminder",
+		"reminder aktif", "reminder apa aja", "reminder apa saja", "jadwal aktif",
+		"daftar jadwal", "list jadwal", "alarm aktif",
+	}
+	for _, kw := range reminderListKeywords {
 		if strings.Contains(lower, kw) {
+			reminders, err := u.reminderUC.ListActive(ctx)
+			if err != nil {
+				return "", err
+			}
+			return FormatReminderList(reminders), nil
+		}
+	}
+	// Fallback: kata tunggal yang sudah cukup spesifik dalam konteks reminder
+	for _, kw := range []string{"daftar", "list", "aktif"} {
+		if lower == kw || lower == kw+" reminder" || lower == kw+" jadwal" {
 			reminders, err := u.reminderUC.ListActive(ctx)
 			if err != nil {
 				return "", err
@@ -682,16 +712,57 @@ func (u *chatUsecase) handleReminder(ctx context.Context, message string) (strin
 	return fmt.Sprintf("✅ %d reminder berhasil dibuat wok!\n\n%s", len(lines), strings.Join(lines, "\n\n")), nil
 }
 
-// handleExpense parses and records expense messages, or returns reports.
+// handleExpense parses and records expense messages, or returns reports/lists.
 func (u *chatUsecase) handleExpense(ctx context.Context, message string) (string, error) {
 	lowerMsg := strings.ToLower(message)
 
-	// Cek apakah user minta laporan/rekap pengeluaran.
-	// Pakai kombinasi: harus ada kata laporan/rekap/summary ATAU "berapa" + kata uang/pengeluaran.
+	// ── 1. Deteksi intent HAPUS pengeluaran ──────────────────────────────────
+	// Harus ada kata hapus/delete DAN konteks pengeluaran/expense.
+	deleteVerbPresent := strings.Contains(lowerMsg, "hapus") || strings.Contains(lowerMsg, "delete") || strings.Contains(lowerMsg, "batalkan")
+	expenseContextPresent := strings.Contains(lowerMsg, "pengeluaran") || strings.Contains(lowerMsg, "expense") ||
+		strings.Contains(lowerMsg, "transaksi") || strings.Contains(lowerMsg, "catat")
+	hasIDInMsg := regexp.MustCompile(`\b\d+\b`).MatchString(lowerMsg)
+	if deleteVerbPresent && (expenseContextPresent || hasIDInMsg) {
+		// Hapus berdasarkan ID jika ada angka
+		numRegex := regexp.MustCompile(`\b(\d+)\b`)
+		matches := numRegex.FindStringSubmatch(lowerMsg)
+		if len(matches) > 1 {
+			if id, parseErr := strconv.ParseInt(matches[1], 10, 64); parseErr == nil && id > 0 {
+				if err := u.expenseUC.DeleteExpense(ctx, id); err != nil {
+					return fmt.Sprintf("Pengeluaran dengan ID %d tidak ditemukan wir 😅. Ketik *list pengeluaran* untuk melihat daftar.", id), nil
+				}
+				return fmt.Sprintf("🗑️ *Pengeluaran ID %d berhasil dihapus wir!*", id), nil
+			}
+		}
+		return "Untuk menghapus pengeluaran, sebutkan ID-nya (contoh: *hapus pengeluaran 5*).\nKetik *list pengeluaran* untuk melihat daftar ID dulu ya wir! 💸", nil
+	}
+
+	// ── 2. Deteksi intent LIST / LIHAT daftar pengeluaran ──────────────────
+	// Keyword tunggal yang cukup spesifik, TIDAK perlu kombinasi.
+	listKeywords := []string{
+		"list pengeluaran", "daftar pengeluaran", "lihat pengeluaran", "show pengeluaran",
+		"riwayat pengeluaran", "history pengeluaran", "transaksi terakhir",
+		"pengeluaran apa aja", "pengeluaran apa saja", "catatan pengeluaran",
+		"list expense", "daftar expense",
+	}
+	for _, kw := range listKeywords {
+		if strings.Contains(lowerMsg, kw) {
+			report, err := u.expenseUC.GetCurrentMonthReport(ctx)
+			if err != nil {
+				return "", err
+			}
+			return FormatExpenseReport(report), nil
+		}
+	}
+
+	// ── 3. Deteksi intent LAPORAN / REKAP / SUMMARY ─────────────────────────
 	expenseReportContext := strings.Contains(lowerMsg, "laporan") ||
 		strings.Contains(lowerMsg, "rekap") ||
 		strings.Contains(lowerMsg, "summary") ||
+		strings.Contains(lowerMsg, "report") ||
 		strings.Contains(lowerMsg, "pengeluaran bulan") ||
+		strings.Contains(lowerMsg, "total pengeluaran") ||
+		strings.Contains(lowerMsg, "habis berapa") ||
 		(strings.Contains(lowerMsg, "berapa") && (strings.Contains(lowerMsg, "pengeluaran") || strings.Contains(lowerMsg, "habis") || strings.Contains(lowerMsg, "keluar") || strings.Contains(lowerMsg, "belanja")))
 	if expenseReportContext {
 		report, err := u.expenseUC.GetCurrentMonthReport(ctx)
@@ -701,10 +772,18 @@ func (u *chatUsecase) handleExpense(ctx context.Context, message string) (string
 		return FormatExpenseReport(report), nil
 	}
 
-	// Parse expense from natural language
+	// ── 4. Parse & catat pengeluaran baru dari bahasa natural ───────────────
 	amount, category, description, err := u.llm.ParseExpense(ctx, message)
 	if err != nil {
 		return "", fmt.Errorf("parse expense: %w", err)
+	}
+
+	// Guard: jangan catat kalau amount = 0 (kemungkinan user minta list/tanya, bukan mencatat)
+	if amount <= 0 {
+		return "Hmm, gw ga nangkep nominal pengeluarannya wir 🤔\n" +
+			"Kalau mau *catat*: contoh _\"keluar 50rb buat makan\"_\n" +
+			"Kalau mau *lihat daftar*: ketik _\"list pengeluaran\"_\n" +
+			"Kalau mau *rekap bulanan*: ketik _\"laporan pengeluaran\"_", nil
 	}
 
 	// Record expense

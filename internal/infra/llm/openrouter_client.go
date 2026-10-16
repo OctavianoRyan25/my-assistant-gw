@@ -131,20 +131,39 @@ Kembalikan HANYA JSON array valid tanpa markdown formatting. Format:
 }
 
 func (c *openRouterClient) ClassifyIntent(ctx context.Context, message string) (*domain.IntentResult, error) {
-	systemPrompt := `Kamu adalah classifier intent. Analisa pesan pengguna dan tentukan intent-nya.
-Kembalikan HANYA JSON valid dengan format:
+	systemPrompt := `Kamu adalah classifier intent untuk AI asisten personal. Tugasmu: baca pesan pengguna (dan konteks percakapan sebelumnya jika ada), tentukan intent pesan TERAKHIR user, kembalikan JSON.
+Kembalikan HANYA JSON valid:
 {"intent": "<intent>", "confidence": <0.0-1.0>}
 
 Intent yang tersedia:
-- "reminder": user ingin membuat, melihat, mengubah, atau membatalkan reminder/jadwal
-- "expense": user ingin mencatat pengeluaran, atau menanyakan laporan pengeluaran
+- "reminder": user ingin MEMBUAT, MELIHAT DAFTAR, MENGUBAH, atau MENGHAPUS reminder/jadwal/alarm
+- "expense": user ingin MENCATAT pengeluaran uang BARU, MELIHAT DAFTAR/LIST pengeluaran, MELIHAT laporan/rekap, atau menanyakan total biaya pengeluaran
+- "workout": user MELAPORKAN aktivitas olahraga yang sudah/baru dilakukan, atau ingin MELIHAT/MENGHAPUS riwayat workout
 - "search": user menanyakan informasi terkini, berita, atau hal yang butuh info real-time
 - "reset": user ingin mereset/menghapus riwayat percakapan
 - "general_chat": percakapan umum, brainstorming, diskusi, atau hal lainnya
 
+ATURAN PENTING:
+1. Fokus pada pesan terbaru user. Konteks hanya untuk memahami referensi ambigu.
+2. Pesan singkat seperti "oke", "ya", "sip", "wkwk", "haha" → "general_chat" confidence tinggi (≥0.90).
+3. "expense" mencakup DUA sub-kasus:
+   a. CATAT pengeluaran: ada nominal uang eksplisit ("keluar 50rb", "beli kopi 25000", "bayar ojol 15rb")
+   b. LIHAT/LIST pengeluaran: "list pengeluaran", "daftar pengeluaran", "lihat pengeluaran", "riwayat pengeluaran", "laporan pengeluaran", "rekap pengeluaran", "berapa pengeluaran"
+   KEDUANYA harus di-route ke "expense" — handler akan membedakan sendiri.
+4. HANYA "workout" jika user melaporkan aktivitas SUDAH dilakukan, atau mau LIHAT/HAPUS data workout.
+5. Kalau ragu, pilih confidence lebih rendah dan pertimbangkan "general_chat".
+
 Contoh:
 - "ingatkan aku besok jam 8 meeting" → {"intent": "reminder", "confidence": 0.98}
+- "list reminder" / "daftar reminder" → {"intent": "reminder", "confidence": 0.97}
 - "keluar 50rb buat makan" → {"intent": "expense", "confidence": 0.97}
+- "list pengeluaran" → {"intent": "expense", "confidence": 0.97}
+- "daftar pengeluaran" → {"intent": "expense", "confidence": 0.97}
+- "lihat pengeluaran" → {"intent": "expense", "confidence": 0.96}
+- "rekap pengeluaran" → {"intent": "expense", "confidence": 0.96}
+- "laporan pengeluaran bulan ini" → {"intent": "expense", "confidence": 0.96}
+- "habis gym 60 menit, push day" → {"intent": "workout", "confidence": 0.97}
+- "list workout" → {"intent": "workout", "confidence": 0.98}
 - "berita AI hari ini apa?" → {"intent": "search", "confidence": 0.95}
 - "mulai obrolan baru" → {"intent": "reset", "confidence": 0.99}
 - "kamu bisa apa?" → {"intent": "general_chat", "confidence": 0.90}`
@@ -229,14 +248,29 @@ Aturan:
 }
 
 func (c *openRouterClient) ParseExpense(ctx context.Context, message string) (amount float64, category string, description string, err error) {
-	systemPrompt := `Kamu adalah parser pengeluaran. Ekstrak informasi pengeluaran dari pesan pengguna.
+	systemPrompt := `Kamu adalah parser pengeluaran. Tugasmu HANYA mengekstrak data pencatatan pengeluaran baru dari pesan pengguna.
+
 Kembalikan HANYA JSON valid:
 {"amount": <angka dalam rupiah>, "category": "<kategori>", "description": "<deskripsi singkat>"}
 
 Kategori yang tersedia: makan, transport, hiburan, kesehatan, belanja, tagihan, lainnya
-Aturan:
-- amount harus angka (bukan string), dalam rupiah. "50rb" = 50000, "1.5jt" = 1500000
-- Infer kategori dari konteks jika tidak disebutkan eksplisit`
+
+ATURAN PENTING:
+- amount harus angka (bukan string), dalam rupiah. "50rb" = 50000, "1.5jt" = 1500000, "25k" = 25000
+- Infer kategori dari konteks jika tidak disebutkan eksplisit
+- JIKA pesan pengguna adalah permintaan MELIHAT/LIST/REKAP pengeluaran (bukan mencatat baru), kembalikan: {"amount": 0, "category": "", "description": "LIST_REQUEST"}
+- JIKA pesan tidak mengandung nominal pengeluaran yang jelas, kembalikan: {"amount": 0, "category": "", "description": ""}
+- JANGAN mengarang nominal jika tidak ada dalam pesan
+
+Contoh BENAR (mencatat):
+- "keluar 50rb buat makan" → {"amount": 50000, "category": "makan", "description": "makan"}
+- "beli kopi 25000" → {"amount": 25000, "category": "makan", "description": "kopi"}
+- "bayar ojol 15rb" → {"amount": 15000, "category": "transport", "description": "ojol"}
+
+Contoh BUKAN pencatatan (kembalikan amount: 0):
+- "list pengeluaran" → {"amount": 0, "category": "", "description": "LIST_REQUEST"}
+- "daftar pengeluaran" → {"amount": 0, "category": "", "description": "LIST_REQUEST"}
+- "berapa pengeluaran gw" → {"amount": 0, "category": "", "description": "LIST_REQUEST"}`
 
 	resp, err := c.callAPI(ctx, []orMessage{
 		{Role: "system", Content: systemPrompt},

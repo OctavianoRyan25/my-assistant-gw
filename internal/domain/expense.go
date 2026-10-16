@@ -50,4 +50,5 @@ type ExpenseUsecase interface {
 	GetMonthlyReport(ctx context.Context, year, month int) (*ExpenseReport, error)
 	GetCurrentMonthReport(ctx context.Context) (*ExpenseReport, error)
 	SendMonthlyReportIfDue(ctx context.Context) error
+	DeleteExpense(ctx context.Context, id int64) error
 }

@@ -65,6 +65,15 @@ func (u *expenseUsecase) GetCurrentMonthReport(ctx context.Context) (*domain.Exp
 	return u.repo.GetMonthlyReport(ctx, now.Year(), int(now.Month()))
 }
 
+// DeleteExpense removes an expense by its ID.
+func (u *expenseUsecase) DeleteExpense(ctx context.Context, id int64) error {
+	if err := u.repo.Delete(ctx, id); err != nil {
+		return fmt.Errorf("delete expense id %d: %w", id, err)
+	}
+	u.logger.Info("expense deleted", zap.Int64("id", id))
+	return nil
+}
+
 // SendMonthlyReportIfDue sends the monthly expense report via WhatsApp
 // if today is the last day of the month.
 func (u *expenseUsecase) SendMonthlyReportIfDue(ctx context.Context) error {
