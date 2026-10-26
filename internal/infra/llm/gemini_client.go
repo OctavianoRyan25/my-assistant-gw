@@ -215,6 +215,7 @@ Intent yang tersedia:
 - "search": user menanyakan informasi terkini, berita, fakta, atau hal yang butuh data real-time dari internet
 - "reset": user ingin menghapus/mereset seluruh riwayat percakapan
 - "general_chat": obrolan umum, pertanyaan konsep, brainstorming, curhat, diskusi, tindak lanjut dari obrolan sebelumnya, atau hal yang tidak masuk kategori di atas
+- "budget": user ingin MENCATAT/MENGUBAH penghasilan atau gaji bulanan, MELIHAT penghasilan bulan ini, menanyakan SISA uang bulan ini (setelah dikurangi pengeluaran), atau mengatur/menghapus pengingat penghasilan
 
 ATURAN PENTING:
 1. Fokus pada pesan terbaru user (bagian "PESAN TERBARU:"). Konteks hanya digunakan untuk memahami referensi ambigu.
@@ -226,7 +227,13 @@ ATURAN PENTING:
    a. CATAT pengeluaran: ada nominal uang eksplisit ("keluar 50rb", "beli kopi 25000", "bayar ojol 15rb")
    b. LIHAT/LIST pengeluaran: "list pengeluaran", "daftar pengeluaran", "lihat pengeluaran", "riwayat pengeluaran", "laporan pengeluaran", "rekap pengeluaran", "total pengeluaran", "berapa pengeluaran", "pengeluaran bulan ini"
    KEDUANYA harus di-route ke "expense" — handler akan membedakan sendiri.
-7. Kalau ragu antara dua intent, pilih yang confidence-nya lebih rendah dan pertimbangkan "general_chat".
+7. "budget" mencakup beberapa sub-kasus:
+   a. CATAT penghasilan: "gaji bulan ini 8jt", "penghasilan aku 10 juta", "ganti gaji jadi 9jt", "gajian masuk 7,5jt"
+   b. SISA uang: "sisa uang bulan ini berapa", "sisa duit", "masih sisa berapa", "uangku tinggal berapa", "sisa budget"
+   c. LIHAT penghasilan: "penghasilan bulan ini berapa", "gaji aku berapa"
+   d. ATUR pengingat: "ingatkan aku catat gaji tiap tanggal 25", "hapus pengingat gaji"
+   Bedakan dengan "expense": expense = uang KELUAR (beli, bayar, daftar/total pengeluaran). budget = uang MASUK atau SISA uang.
+8. Kalau ragu antara dua intent, pilih yang confidence-nya lebih rendah dan pertimbangkan "general_chat".
 
 Contoh:
 - "ingatkan aku besok jam 8 meeting" → {"intent": "reminder", "confidence": 0.98}
@@ -261,7 +268,17 @@ Contoh:
 - "gimana menurut kamu?" → {"intent": "general_chat", "confidence": 0.93}
 - "terus?" → {"intent": "general_chat", "confidence": 0.92}
 - "maksudnya?" → {"intent": "general_chat", "confidence": 0.91}
-- "kenapa?" → {"intent": "general_chat", "confidence": 0.90}`
+- "kenapa?" → {"intent": "general_chat", "confidence": 0.90}
+- "kasih budget berapa" → {"intent": "budget", "confidence": 0.97}
+- "bagiin budget berapa" → {"intent": "budget", "confidence": 0.97}
+- "gaji bulan ini 8jt" → {"intent": "budget", "confidence": 0.97}
+- "penghasilan aku 10 juta sebulan" → {"intent": "budget", "confidence": 0.96}
+- "ganti gaji jadi 9jt" → {"intent": "budget", "confidence": 0.95}
+- "sisa uang bulan ini berapa" → {"intent": "budget", "confidence": 0.97}
+- "uangku tinggal berapa" → {"intent": "budget", "confidence": 0.96}
+- "masih sisa berapa ya bulan ini" → {"intent": "budget", "confidence": 0.95}
+- "penghasilan bulan ini berapa" → {"intent": "budget", "confidence": 0.95}
+- "ingatkan aku catat gaji tiap tanggal 25" → {"intent": "budget", "confidence": 0.93}`
 
 	reqBody := geminiRequest{
 		SystemInstruction: &geminiContent{

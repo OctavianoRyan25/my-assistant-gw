@@ -64,6 +64,7 @@ func main() {
 	nutritionRepo := repository.NewNutritionRepository(db)
 	userProfileRepo := repository.NewUserProfileRepository(db)
 	workoutRepo := repository.NewWorkoutRepository(db)
+	budgetRepo  := repository.NewBudgetRepository(db)
 
 	// ── 6. Infrastructure clients ─────────────────────────────────────────────
 	var llmClient domain.LLMClient
@@ -99,8 +100,9 @@ func main() {
 		workoutParser = gClient
 	}
 	workoutUC := usecase.NewWorkoutUsecase(workoutRepo, workoutParser, waSender, cfg.WAPhoneNumber, log, tz)
+	budgetUC  := usecase.NewBudgetUsecase(budgetRepo, expenseRepo, userProfileUC, log, tz)
 
-	chatUC := usecase.NewChatUsecase(chatRepo, memoryRepo, llmClient, searchClient, reminderUC, expenseUC, nutritionUC, workoutUC, log, tz)
+	chatUC := usecase.NewChatUsecase(chatRepo, memoryRepo, llmClient, searchClient, reminderUC, expenseUC, nutritionUC, workoutUC, budgetUC, log, tz)
 
 	// ── 8. Register WhatsApp message handler ──────────────────────────────────
 	waSender.RegisterMessageHandler(chatUC)

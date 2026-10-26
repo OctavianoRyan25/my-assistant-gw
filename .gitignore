@@ -27,3 +27,6 @@ store/
 # Logs
 *.log
 logs/
+
+# data
+data

@@ -30,6 +30,7 @@ type chatUsecase struct {
 	expenseUC    domain.ExpenseUsecase
 	nutritionUC  domain.NutritionUsecase // untuk perhitungan kalori dari gambar makanan
 	workoutUC    domain.WorkoutUsecase
+	budgetUC     domain.BudgetUsecase
 	logger       *zap.Logger
 	timezone     *time.Location
 	receiptStore *receiptStateStore // pending receipt awaiting confirmation
@@ -44,7 +45,8 @@ func NewChatUsecase(
 	reminderUC domain.ReminderUsecase,
 	expenseUC domain.ExpenseUsecase,
 	nutritionUC domain.NutritionUsecase,
-	workoutUC   domain.WorkoutUsecase,
+	workoutUC domain.WorkoutUsecase,
+	budgetUC domain.BudgetUsecase,
 	logger *zap.Logger,
 	timezone *time.Location,
 ) domain.ChatUsecase {
@@ -57,6 +59,7 @@ func NewChatUsecase(
 		expenseUC:    expenseUC,
 		nutritionUC:  nutritionUC,
 		workoutUC:    workoutUC,
+		budgetUC:     budgetUC,
 		logger:       logger,
 		timezone:     timezone,
 		receiptStore: newReceiptStateStore(),
@@ -135,6 +138,8 @@ func (u *chatUsecase) HandleMessage(ctx context.Context, userMessage string) (st
 		reply, err = u.handleExpense(ctx, userMessage)
 	case domain.IntentWorkout:
 		reply, err = u.handleWorkout(ctx, userMessage)
+	case domain.IntentBudget:
+		reply, err = u.handleBudget(ctx, userMessage)
 	case domain.IntentSearch:
 		reply, err = u.handleSearch(ctx, userMessage)
 	case domain.IntentReset:
@@ -830,7 +835,152 @@ func (u *chatUsecase) handleExpense(ctx context.Context, message string) (string
 		return "", err
 	}
 
-	return FormatExpenseConfirmation(expense), nil
+	reply := FormatExpenseConfirmation(expense)
+	if u.budgetUC != nil {
+		if bStatus, alertTriggered, _ := u.budgetUC.CheckExpenseThreshold(ctx, amount); alertTriggered && bStatus != nil && bStatus.WarningMessage != "" {
+			reply += "\n\n" + bStatus.WarningMessage
+		}
+	}
+
+	return reply, nil
+}
+
+// handleBudget handles setting, viewing, and checking monthly budget / salary thresholds.
+func (u *chatUsecase) handleBudget(ctx context.Context, message string) (string, error) {
+	if u.budgetUC == nil {
+		return "Fitur budget belum diaktifkan wir.", nil
+	}
+
+	lowerMsg := strings.ToLower(strings.TrimSpace(message))
+	now := time.Now().In(u.timezone)
+	targetYear, targetMonth, _ := ParseExpenseTargetPeriod(lowerMsg, now)
+
+	// 1. Cek apakah user berniat MENYETEL / MENGUBAH budget atau gaji
+	salary, threshold, hasSalary, hasThreshold := ParseBudgetSettingInput(lowerMsg)
+
+	isSettingVerb := strings.Contains(lowerMsg, "set") ||
+		strings.Contains(lowerMsg, "atur") ||
+		strings.Contains(lowerMsg, "ubah") ||
+		strings.Contains(lowerMsg, "ganti") ||
+		strings.Contains(lowerMsg, "masukkan") ||
+		strings.Contains(lowerMsg, "input") ||
+		strings.Contains(lowerMsg, "pasang") ||
+		strings.Contains(lowerMsg, "kasih budget") ||
+		strings.Contains(lowerMsg, "bagiin budget")
+
+	if hasSalary || (isSettingVerb && hasThreshold) {
+		if !hasSalary {
+			// Hanya mengubah ambang batas peringatan (threshold)
+			currStatus, err := u.budgetUC.GetBudgetStatus(ctx, targetYear, targetMonth)
+			if err == nil && currStatus != nil && currStatus.MonthlySalary > 0 {
+				budget, setErr := u.budgetUC.SetBudget(ctx, currStatus.MonthlySalary, threshold)
+				if setErr != nil {
+					return "", setErr
+				}
+				status, _ := u.budgetUC.GetBudgetStatus(ctx, targetYear, targetMonth)
+				return fmt.Sprintf("✅ *Ambang batas peringatan budget berhasil diubah jadi %.0f%%!*\n\n%s",
+					budget.WarningThresholdPercent,
+					FormatBudgetStatus(status),
+				), nil
+			}
+			return "Berapa nominal budget/gaji bulanan yang mau disetel wir? 🤔\nContoh: *set budget 5jt* atau *gaji 10jt threshold 80%*", nil
+		}
+
+		if !hasThreshold {
+			threshold = domain.DefaultWarningThresholdPercent
+		}
+
+		budget, err := u.budgetUC.SetBudget(ctx, salary, threshold)
+		if err != nil {
+			return "", err
+		}
+
+		status, err := u.budgetUC.GetBudgetStatus(ctx, targetYear, targetMonth)
+		if err != nil {
+			return "", err
+		}
+
+		return fmt.Sprintf("✅ *Budget bulanan berhasil disetel: Rp %s (Threshold: %.0f%%)!*\n\n%s",
+			formatRupiah(budget.MonthlySalary),
+			budget.WarningThresholdPercent,
+			FormatBudgetStatus(status),
+		), nil
+	}
+
+	// 2. Default: Tampilkan status budget bulan ini (atau bulan yang diminta)
+	// Contoh: "budget bulan ini", "cek budget", "sisa budget", "uangku tinggal berapa", "sisa uang bulan ini"
+	status, err := u.budgetUC.GetBudgetStatus(ctx, targetYear, targetMonth)
+	if err != nil {
+		return "", err
+	}
+
+	return FormatBudgetStatus(status), nil
+}
+
+// ParseBudgetSettingInput parses salary amount and warning threshold percentage from text.
+func ParseBudgetSettingInput(msg string) (salary float64, threshold float64, hasSalary bool, hasThreshold bool) {
+	lower := strings.ToLower(msg)
+
+	// 1. Parse threshold jika ada (contoh: "threshold 85%", "ambang batas 75", "warning 80%")
+	thresholdRegexes := []*regexp.Regexp{
+		regexp.MustCompile(`(?:threshold|warning|peringatan|ambang|batas)\s*(?:peringatan\s*)?(\d{1,3})\s*%?`),
+		regexp.MustCompile(`(\d{1,3})\s*%\s*(?:threshold|warning|peringatan|ambang|batas)?`),
+	}
+	for _, re := range thresholdRegexes {
+		if m := re.FindStringSubmatch(lower); len(m) > 1 {
+			if val, err := strconv.ParseFloat(m[1], 64); err == nil && val > 0 && val <= 100 {
+				threshold = val
+				hasThreshold = true
+				break
+			}
+		}
+	}
+
+	// 2. Parse nominal gaji / budget
+	// A. Juta: "10jt", "10 jt", "5.5 juta", "5,5jt"
+	jutaRegex := regexp.MustCompile(`(\d+(?:[.,]\d+)?)\s*(?:jt|juta|million)\b`)
+	if m := jutaRegex.FindStringSubmatch(lower); len(m) > 1 {
+		numStr := strings.ReplaceAll(m[1], ",", ".")
+		if val, err := strconv.ParseFloat(numStr, 64); err == nil && val > 0 {
+			salary = val * 1000000
+			hasSalary = true
+			return
+		}
+	}
+
+	// B. Ribu: "500rb", "500 ribu", "500k"
+	ribuRegex := regexp.MustCompile(`(\d+(?:[.,]\d+)?)\s*(?:rb|ribu|k)\b`)
+	if m := ribuRegex.FindStringSubmatch(lower); len(m) > 1 {
+		numStr := strings.ReplaceAll(m[1], ",", ".")
+		if val, err := strconv.ParseFloat(numStr, 64); err == nil && val > 0 {
+			salary = val * 1000
+			hasSalary = true
+			return
+		}
+	}
+
+	// C. Format angka bertitik: "8.000.000", "Rp 10.000.000"
+	dotRegex := regexp.MustCompile(`(?:rp\.?\s*)?(\d{1,3}(?:\.\d{3}){1,3})\b`)
+	if m := dotRegex.FindStringSubmatch(lower); len(m) > 1 {
+		numStr := strings.ReplaceAll(m[1], ".", "")
+		if val, err := strconv.ParseFloat(numStr, 64); err == nil && val > 0 {
+			salary = val
+			hasSalary = true
+			return
+		}
+	}
+
+	// D. Angka murni: "5000000" (minimal 5 digit untuk budget)
+	plainRegex := regexp.MustCompile(`\b(\d{5,12})\b`)
+	if m := plainRegex.FindStringSubmatch(lower); len(m) > 1 {
+		if val, err := strconv.ParseFloat(m[1], 64); err == nil && val > 0 {
+			salary = val
+			hasSalary = true
+			return
+		}
+	}
+
+	return
 }
 
 // detectExpenseCategory checks if the message mentions a known expense category.

@@ -13,6 +13,7 @@ type Budget struct {
 	ID                      int64     `json:"id"`
 	MonthlySalary           float64   `json:"monthly_salary"`            // Gaji atau batas pengeluaran per bulan
 	WarningThresholdPercent float64   `json:"warning_threshold_percent"` // Persentase ambang batas peringatan (e.g. 80.0)
+	Period                  string    `json:"period"`                    // e.g. "Oktober 2026"
 	CreatedAt               time.Time `json:"created_at"`
 	UpdatedAt               time.Time `json:"updated_at"`
 }
@@ -32,8 +33,9 @@ type BudgetStatus struct {
 
 // BudgetRepository defines persistence operations for budget settings.
 type BudgetRepository interface {
-	Get(ctx context.Context) (*Budget, error)
-	Save(ctx context.Context, budget *Budget) error
+	Get(ctx context.Context, period string) (*Budget, error)
+	GetLatest(ctx context.Context) (*Budget, error)
+	Save(ctx context.Context, period string, budget *Budget) error
 }
 
 // BudgetUsecase defines business logic for budget monitoring and salary threshold alerts.
