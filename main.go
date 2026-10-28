@@ -108,7 +108,7 @@ func main() {
 	// waSender.RegisterMessageHandler(chatUC)
 
 	// ── 9. Scheduler ─────────────────────────────────────────────────────────
-	sched := scheduler.NewScheduler(reminderUC, expenseUC, log, tz)
+	sched := scheduler.NewScheduler(reminderUC, expenseUC, workoutUC, log, tz)
 	sched.Start()
 	defer sched.Stop()
 	log.Info("scheduler started")

@@ -16,16 +16,18 @@ type Scheduler struct {
 	cron       *cron.Cron
 	reminderUC domain.ReminderUsecase
 	expenseUC  domain.ExpenseUsecase
+	workoutUC  domain.WorkoutUsecase
 	logger     *zap.Logger
 }
 
 // NewScheduler creates and configures the cron scheduler with the given timezone.
-func NewScheduler(reminderUC domain.ReminderUsecase, expenseUC domain.ExpenseUsecase, logger *zap.Logger, tz *time.Location) *Scheduler {
+func NewScheduler(reminderUC domain.ReminderUsecase, expenseUC domain.ExpenseUsecase, workoutUC domain.WorkoutUsecase, logger *zap.Logger, tz *time.Location) *Scheduler {
 	c := cron.New(cron.WithLocation(tz))
 	s := &Scheduler{
 		cron:       c,
 		reminderUC: reminderUC,
 		expenseUC:  expenseUC,
+		workoutUC:  workoutUC,
 		logger:     logger,
 	}
 
@@ -75,9 +77,9 @@ func (s *Scheduler) sendMonthlyExpenseReport() {
 
 // SendMonthlyWorkoutReport
 func (s *Scheduler) sendMonthlyWorkoutReport() {
-	// _ := context.Background()
+	ctx := context.Background()
 	s.logger.Info("checking monthly workout report")
-	// if err := s.workoutUC.SendMonthlyReportIfDue(ctx); err != nil {
-	// 	s.logger.Error("send monthly workout report error", zap.Error(err))
-	// }
+	if err := s.workoutUC.SendMonthlyReportIfDue(ctx); err != nil {
+		s.logger.Error("send monthly workout report error", zap.Error(err))
+	}
 }
