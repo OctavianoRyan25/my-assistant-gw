@@ -1130,6 +1130,7 @@ func (u *chatUsecase) handleSearch(ctx context.Context, message string) (string,
 
 // handleGeneralChat handles general conversation with context history and long-term personality memory.
 func (u *chatUsecase) handleGeneralChat(ctx context.Context, message string) (string, error) {
+	// handling assistant memory into his master
 	lower := strings.ToLower(strings.TrimSpace(message))
 	if strings.Contains(lower, "kamu tau apa") || strings.Contains(lower, "kamu tahu apa") ||
 		strings.Contains(lower, "inget apa tentang aku") || strings.Contains(lower, "ingat apa tentang aku") ||
@@ -1137,6 +1138,7 @@ func (u *chatUsecase) handleGeneralChat(ctx context.Context, message string) (st
 		return u.handleListMemories(ctx)
 	}
 
+	// Get chat history, so the assistant didn't hallucinate and know the context of conversation
 	history, err := u.chatRepo.GetRecentMessages(ctx, maxChatHistory)
 	if err != nil {
 		u.logger.Warn("failed to get chat history", zap.Error(err))
@@ -1165,9 +1167,9 @@ func (u *chatUsecase) handleGeneralChat(ctx context.Context, message string) (st
 		messages = append(messages, *h)
 	}
 
-	// Pastikan pesan user terbaru ada di ujung konteks.
-	// (saveMessage dipanggil sebelum handleGeneralChat, jadi history sudah mengandung pesan ini.
-	// Tapi kalau history kosong atau dipangkas, kita pastikan pesannya tetap ada.)
+	// Make sure the latest message in the edge of message array.
+	// (saveMessage called before handleGeneralChat, so history already contains this message.
+	// But if the history is empty or trimmed, we make sure the message is still there.)
 	if len(messages) == 0 || messages[len(messages)-1].Message != message {
 		messages = append(messages, domain.ChatMessage{
 			Role:    domain.RoleUser,

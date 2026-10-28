@@ -16,16 +16,18 @@ type Scheduler struct {
 	cron       *cron.Cron
 	reminderUC domain.ReminderUsecase
 	expenseUC  domain.ExpenseUsecase
+	workoutUC  domain.WorkoutUsecase
 	logger     *zap.Logger
 }
 
 // NewScheduler creates and configures the cron scheduler with the given timezone.
-func NewScheduler(reminderUC domain.ReminderUsecase, expenseUC domain.ExpenseUsecase, logger *zap.Logger, tz *time.Location) *Scheduler {
+func NewScheduler(reminderUC domain.ReminderUsecase, expenseUC domain.ExpenseUsecase, workoutUC domain.WorkoutUsecase, logger *zap.Logger, tz *time.Location) *Scheduler {
 	c := cron.New(cron.WithLocation(tz))
 	s := &Scheduler{
 		cron:       c,
 		reminderUC: reminderUC,
 		expenseUC:  expenseUC,
+		workoutUC:  workoutUC,
 		logger:     logger,
 	}
 
@@ -40,6 +42,21 @@ func NewScheduler(reminderUC domain.ReminderUsecase, expenseUC domain.ExpenseUse
 	if err != nil {
 		logger.Error("failed to add expense report cron job", zap.Error(err))
 	}
+
+	// Every day at 20:00 in tz: check if monthly workout report should be sent
+	_, err = c.AddFunc("0 20 * * *", s.sendMonthlyWorkoutReport)
+	if err != nil {
+		logger.Error("failed to add workout report cron job", zap.Error(err))
+	}
+
+	// Every day of month 15 18:00 WIB: check if budget report
+	_, err = c.AddFunc("0 18 15 * *", func() {
+		logger.Info("schedular at 18:00 day of 15, month: check if budget report")
+	})
+	// TODO: add send monthly budget report cron job
+	// if err != nil {
+	// 	logger.Error("failed to add workout report cron job", zap.Error(err))
+	// }
 
 	return s
 }
@@ -75,9 +92,9 @@ func (s *Scheduler) sendMonthlyExpenseReport() {
 
 // SendMonthlyWorkoutReport
 func (s *Scheduler) sendMonthlyWorkoutReport() {
-	// _ := context.Background()
+	ctx := context.Background()
 	s.logger.Info("checking monthly workout report")
-	// if err := s.workoutUC.SendMonthlyReportIfDue(ctx); err != nil {
-	// 	s.logger.Error("send monthly workout report error", zap.Error(err))
-	// }
+	if err := s.workoutUC.SendMonthlyReportIfDue(ctx); err != nil {
+		s.logger.Error("send monthly workout report error", zap.Error(err))
+	}
 }
