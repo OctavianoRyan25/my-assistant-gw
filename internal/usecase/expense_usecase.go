@@ -149,6 +149,54 @@ func (u *expenseUsecase) GetDetailMonthReportByCategory(ctx context.Context, yea
 	return filtered, nil
 }
 
+// GetTodayExpenses returns detailed expense data for today.
+func (u *expenseUsecase) GetTodayExpenses(ctx context.Context) ([]*domain.Expense, error) {
+	now := time.Now().In(u.timezone)
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, u.timezone)
+	end := start.AddDate(0, 0, 1).Add(-time.Second)
+	return u.repo.GetByDateRange(ctx, start, end)
+}
+
+// GetTodayExpensesByCategory returns detailed expense data for today filtered by category.
+func (u *expenseUsecase) GetTodayExpensesByCategory(ctx context.Context, category string) ([]*domain.Expense, error) {
+	expenses, err := u.GetTodayExpenses(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	targetCat := NormalizeExpenseCategory(category)
+	var filtered []*domain.Expense
+	for _, exp := range expenses {
+		if NormalizeExpenseCategory(exp.Category) == targetCat || strings.EqualFold(exp.Category, category) {
+			filtered = append(filtered, exp)
+		}
+	}
+	return filtered, nil
+}
+
+// GetTodayExpenseReport returns aggregated expense data for the current day.
+func (u *expenseUsecase) GetTodayExpenseReport(ctx context.Context) (*domain.ExpenseReport, error) {
+	now := time.Now().In(u.timezone)
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, u.timezone)
+	end := start.AddDate(0, 0, 1).Add(-time.Second)
+	expenses, err := u.GetTodayExpenses(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("error get today expense report: %w", err)
+	}
+	report := &domain.ExpenseReport{
+		Period:    "Hari Ini",
+		StartDate: start,
+		EndDate:   end,
+		Total:     0,
+		Breakdown: make(map[string]float64),
+	}
+	for _, exp := range expenses {
+		report.Total += exp.Amount
+		report.Breakdown[exp.Category] += exp.Amount
+	}
+	return report, nil
+}
+
 // NormalizeExpenseCategory maps category synonyms or variations to canonical domain categories.
 func NormalizeExpenseCategory(cat string) string {
 	c := strings.ToLower(strings.TrimSpace(cat))

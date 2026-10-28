@@ -2,6 +2,7 @@ package usecase_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,6 +127,53 @@ func TestExpenseDetailReports(t *testing.T) {
 		y, m, p := usecase.ParseExpenseTargetPeriod("list pengeluaran", now)
 		if y != 2026 || m != 10 || p != "Oktober 2026" {
 			t.Fatalf("expected 2026-10 'Oktober 2026', got %d-%d '%s'", y, m, p)
+		}
+	})
+
+	t.Run("ParseExpenseTargetPeriod - hari ini", func(t *testing.T) {
+		y, m, p := usecase.ParseExpenseTargetPeriod("list pengeluaran hari ini", now)
+		if y != 2026 || m != 10 || p != "Hari ini (15 Oktober 2026)" {
+			t.Fatalf("expected 2026-10 'Hari ini (15 Oktober 2026)', got %d-%d '%s'", y, m, p)
+		}
+	})
+
+	t.Run("GetTodayExpenses and GetTodayExpenseReport", func(t *testing.T) {
+		todayExp := &domain.Expense{
+			ID:          10,
+			Amount:      35000,
+			Category:    "makan",
+			Description: "Ayam Geprek Hari Ini",
+			OccurredAt:  time.Now().In(loc),
+		}
+		mockRepo.expenses = append(mockRepo.expenses, todayExp)
+
+		todayList, err := uc.GetTodayExpenses(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(todayList) == 0 {
+			t.Fatalf("expected at least 1 today expense, got 0")
+		}
+
+		todayMakan, err := uc.GetTodayExpensesByCategory(context.Background(), "makan")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(todayMakan) == 0 {
+			t.Fatalf("expected at least 1 today makan expense, got 0")
+		}
+
+		rep, err := uc.GetTodayExpenseReport(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if rep.Period != "Hari Ini" || rep.Total <= 0 {
+			t.Fatalf("expected today report with positive total, got %+v", rep)
+		}
+
+		formatted := usecase.FormatDetailExpenseList(todayList, "Hari ini (15 Okt 2026)", "")
+		if formatted == "" || !strings.Contains(formatted, "Ayam Geprek Hari Ini") {
+			t.Fatalf("formatted output missing item description: %s", formatted)
 		}
 	})
 }

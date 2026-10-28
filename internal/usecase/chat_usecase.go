@@ -748,12 +748,14 @@ func (u *chatUsecase) handleExpense(ctx context.Context, message string) (string
 		"riwayat pengeluaran", "history pengeluaran", "transaksi terakhir",
 		"pengeluaran apa aja", "pengeluaran apa saja", "catatan pengeluaran",
 		"list expense", "daftar expense", "detail pengeluaran", "rincian pengeluaran",
+		"pengeluaran hari ini", "pengeluaran today", "expense hari ini", "biaya hari ini",
 	}
 
 	now := time.Now().In(u.timezone)
 	targetYear, targetMonth, periodStr := ParseExpenseTargetPeriod(lowerMsg, now)
 	detectedCat := detectExpenseCategory(lowerMsg)
 	isPastPeriod := targetYear != now.Year() || targetMonth != int(now.Month())
+	isToday := strings.Contains(lowerMsg, "hari ini") || strings.Contains(lowerMsg, "today")
 
 	wantsList := false
 	for _, kw := range listKeywords {
@@ -766,7 +768,29 @@ func (u *chatUsecase) handleExpense(ctx context.Context, message string) (string
 		wantsList = strings.Contains(lowerMsg, "detail") || strings.Contains(lowerMsg, "rincian")
 	}
 
+	if !wantsList && isToday && (expenseContextPresent || strings.Contains(lowerMsg, "pengeluaran") || strings.Contains(lowerMsg, "expense") || strings.Contains(lowerMsg, "biaya") || detectedCat != "") {
+		isRecordAction := strings.Contains(lowerMsg, "catat") || strings.Contains(lowerMsg, "tambah") || strings.Contains(lowerMsg, "input") || strings.Contains(lowerMsg, "masukkan") || strings.Contains(lowerMsg, "tambahkan")
+		isReportAction := strings.Contains(lowerMsg, "laporan") || strings.Contains(lowerMsg, "rekap") || strings.Contains(lowerMsg, "summary") || strings.Contains(lowerMsg, "report") || strings.Contains(lowerMsg, "berapa")
+		if !isRecordAction && !isReportAction {
+			wantsList = true
+		}
+	}
+
 	if wantsList {
+		if isToday {
+			if detectedCat != "" {
+				expenses, err := u.expenseUC.GetTodayExpensesByCategory(ctx, detectedCat)
+				if err != nil {
+					return "", err
+				}
+				return FormatDetailExpenseList(expenses, periodStr, detectedCat), nil
+			}
+			expenses, err := u.expenseUC.GetTodayExpenses(ctx)
+			if err != nil {
+				return "", err
+			}
+			return FormatDetailExpenseList(expenses, periodStr, ""), nil
+		}
 		if detectedCat != "" {
 			expenses, err := u.expenseUC.GetDetailMonthReportByCategory(ctx, targetYear, targetMonth, detectedCat)
 			if err != nil {
@@ -792,6 +816,28 @@ func (u *chatUsecase) handleExpense(ctx context.Context, message string) (string
 		(strings.Contains(lowerMsg, "berapa") && (strings.Contains(lowerMsg, "pengeluaran") || strings.Contains(lowerMsg, "habis") || strings.Contains(lowerMsg, "keluar") || strings.Contains(lowerMsg, "belanja"))) ||
 		((expenseContextPresent || strings.Contains(lowerMsg, "pengeluaran")) && isPastPeriod)
 	if expenseReportContext {
+		if isToday {
+			if strings.Contains(lowerMsg, "detail") || strings.Contains(lowerMsg, "rincian") || detectedCat != "" {
+				if detectedCat != "" {
+					expenses, err := u.expenseUC.GetTodayExpensesByCategory(ctx, detectedCat)
+					if err != nil {
+						return "", err
+					}
+					return FormatDetailExpenseList(expenses, periodStr, detectedCat), nil
+				}
+				expenses, err := u.expenseUC.GetTodayExpenses(ctx)
+				if err != nil {
+					return "", err
+				}
+				return FormatDetailExpenseList(expenses, periodStr, ""), nil
+			}
+
+			report, err := u.expenseUC.GetTodayExpenseReport(ctx)
+			if err != nil {
+				return "", err
+			}
+			return FormatExpenseReport(report), nil
+		}
 		// Jika meminta kategori spesifik atau ada kata kunci detail/rincian
 		if detectedCat != "" {
 			expenses, err := u.expenseUC.GetDetailMonthReportByCategory(ctx, targetYear, targetMonth, detectedCat)
@@ -1042,6 +1088,12 @@ func ParseExpenseTargetPeriod(lowerMsg string, now time.Time) (year int, month i
 		prev := now.AddDate(0, -2, 0)
 		year = prev.Year()
 		month = int(prev.Month())
+	} else if strings.Contains(lowerMsg, "hari ini") || strings.Contains(lowerMsg, "today") {
+		year = now.Year()
+		month = int(now.Month())
+		periodStr = fmt.Sprintf("Hari ini (%02d %s %d)", now.Day(), idMonthNames[int(now.Month())], now.Year())
+		return year, month, periodStr
+		
 	} else {
 		// 3. Cek nama bulan eksplisit (Januari - Desember)
 		monthMap := []struct {
