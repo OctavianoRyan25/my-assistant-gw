@@ -106,7 +106,7 @@ func main() {
 	chatUC := usecase.NewChatUsecase(chatRepo, memoryRepo, llmClient, searchClient, reminderUC, expenseUC, nutritionUC, workoutUC, budgetUC, briefingUC, log, tz)
 
 	// ── 8. Register WhatsApp message handler ──────────────────────────────────
-	// waSender.RegisterMessageHandler(chatUC)
+	waSender.RegisterMessageHandler(chatUC)
 
 	// ── 9. Scheduler ─────────────────────────────────────────────────────────
 	sched := scheduler.NewScheduler(reminderUC, expenseUC, workoutUC, briefingUC, log, tz)
