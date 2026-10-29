@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -31,6 +32,7 @@ type chatUsecase struct {
 	nutritionUC  domain.NutritionUsecase // untuk perhitungan kalori dari gambar makanan
 	workoutUC    domain.WorkoutUsecase
 	budgetUC     domain.BudgetUsecase
+	briefingUC   domain.BriefingUsecase
 	logger       *zap.Logger
 	timezone     *time.Location
 	receiptStore *receiptStateStore // pending receipt awaiting confirmation
@@ -47,6 +49,7 @@ func NewChatUsecase(
 	nutritionUC domain.NutritionUsecase,
 	workoutUC domain.WorkoutUsecase,
 	budgetUC domain.BudgetUsecase,
+	briefingUC domain.BriefingUsecase,
 	logger *zap.Logger,
 	timezone *time.Location,
 ) domain.ChatUsecase {
@@ -60,6 +63,7 @@ func NewChatUsecase(
 		nutritionUC:  nutritionUC,
 		workoutUC:    workoutUC,
 		budgetUC:     budgetUC,
+		briefingUC:   briefingUC,
 		logger:       logger,
 		timezone:     timezone,
 		receiptStore: newReceiptStateStore(),
@@ -80,6 +84,31 @@ func (u *chatUsecase) HandleMessage(ctx context.Context, userMessage string) (st
 				u.logger.Warn("failed to save assistant message", zap.Error(err))
 			}
 			return reply, nil
+		}
+	}
+
+	// 0b. Fast path: Proactive daily briefing / nightly debrief triggers
+	lowerMsg := strings.ToLower(strings.TrimSpace(userMessage))
+	if u.briefingUC != nil {
+		if lowerMsg == "briefing" || lowerMsg == "daily briefing" || lowerMsg == "briefing pagi" ||
+			lowerMsg == "morning briefing" || strings.Contains(lowerMsg, "briefing hari ini") ||
+			strings.Contains(lowerMsg, "agenda hari ini") || strings.Contains(lowerMsg, "jadwal hari ini") {
+			reply, err := u.briefingUC.GetDailyBriefing(ctx)
+			if err == nil {
+				_ = u.saveMessage(ctx, domain.RoleUser, userMessage)
+				_ = u.saveMessage(ctx, domain.RoleAssistant, reply)
+				return reply, nil
+			}
+		}
+		if lowerMsg == "debrief" || lowerMsg == "nightly debrief" || lowerMsg == "evaluasi malam" ||
+			lowerMsg == "rekap malam" || lowerMsg == "evaluasi hari ini" || strings.Contains(lowerMsg, "rekap hari ini") ||
+			strings.Contains(lowerMsg, "debrief hari ini") {
+			reply, err := u.briefingUC.GetNightlyDebrief(ctx)
+			if err == nil {
+				_ = u.saveMessage(ctx, domain.RoleUser, userMessage)
+				_ = u.saveMessage(ctx, domain.RoleAssistant, reply)
+				return reply, nil
+			}
 		}
 	}
 
@@ -142,6 +171,8 @@ func (u *chatUsecase) HandleMessage(ctx context.Context, userMessage string) (st
 		reply, err = u.handleBudget(ctx, userMessage)
 	case domain.IntentSearch:
 		reply, err = u.handleSearch(ctx, userMessage)
+	case domain.IntentCalorie:
+		reply, err = u.handleCalorie(ctx, userMessage)
 	case domain.IntentReset:
 		reply, err = u.handleReset(ctx)
 	default:
@@ -961,6 +992,177 @@ func (u *chatUsecase) handleBudget(ctx context.Context, message string) (string,
 	}
 
 	return FormatBudgetStatus(status), nil
+}
+
+// handleCalorie handles text-based nutrition tracking: viewing daily calorie summaries,
+// logging meals from text (with or without explicit calories), and deleting meal entries.
+func (u *chatUsecase) handleCalorie(ctx context.Context, message string) (string, error) {
+	if u.nutritionUC == nil {
+		return "Fitur hitung kalori belum dikonfigurasi wir 😅", nil
+	}
+
+	cleanMsg := strings.TrimSpace(message)
+	lower := strings.ToLower(cleanMsg)
+
+	// 1. Cek apakah user ingin menghapus catatan makanan/kalori
+	deleteVerbPresent := strings.Contains(lower, "hapus") || strings.Contains(lower, "delete") || strings.Contains(lower, "batal")
+	calorieContextPresent := strings.Contains(lower, "kalori") || strings.Contains(lower, "makanan") || strings.Contains(lower, "makan") || strings.Contains(lower, "meal")
+	hasIDInMessage := regexp.MustCompile(`\b\d+\b`).MatchString(lower)
+	isDelete := deleteVerbPresent && (calorieContextPresent || hasIDInMessage || strings.Contains(lower, "terakhir") || strings.Contains(lower, "last"))
+
+	if isDelete {
+		// A. Hapus makanan terakhir
+		if strings.Contains(lower, "terakhir") || strings.Contains(lower, "tadi") || strings.Contains(lower, "last") || strings.Contains(lower, "latest") {
+			deleted, err := u.nutritionUC.DeleteLatestMeal(ctx)
+			if err != nil {
+				return "Belum ada catatan makanan yang bisa dihapus hari ini wir 😅", nil
+			}
+			return fmt.Sprintf("🗑️ *Catatan makanan terakhir berhasil dihapus!*\n\n• Menu: *%s*\n• Estimasi Kalori: ~%d kcal", deleted.FoodName, deleted.EstimatedCalories), nil
+		}
+
+		// B. Hapus berdasarkan ID angka (contoh: "hapus makanan 5", "hapus kalori 12")
+		numRegex := regexp.MustCompile(`\b(\d+)\b`)
+		matches := numRegex.FindStringSubmatch(lower)
+		if len(matches) > 1 {
+			if id, err := strconv.ParseInt(matches[1], 10, 64); err == nil && id > 0 {
+				if err := u.nutritionUC.DeleteMeal(ctx, id); err != nil {
+					return fmt.Sprintf("Gagal menghapus makanan ID %d wir 😅. Ketik *kalori hari ini* untuk melihat daftar ID yang valid.", id), nil
+				}
+				return fmt.Sprintf("🗑️ *Makanan dengan ID %d berhasil dihapus!*", id), nil
+			}
+		}
+
+		return "Untuk menghapus catatan makanan, sebutkan ID-nya (contoh: *hapus makanan 5*) atau ketik *hapus makanan terakhir*.\n\nKetik *kalori hari ini* untuk melihat daftar hidangan dan ID-nya wir! 🍽️", nil
+	}
+
+	// 2. Cek apakah user ingin melihat rekap/status kalori & makanan hari ini
+	summaryPhrases := []string{
+		"total kalori", "cek kalori", "lihat kalori", "status kalori", "rekap kalori",
+		"sisa kalori", "asupan kalori", "kalori hari ini", "kalori sekarang", "berapa kalori",
+		"makan apa", "makan apa aja", "makan apa saja", "daftar makanan", "list makanan",
+		"riwayat makanan", "catatan makanan", "menu hari ini", "target kalori",
+	}
+	isSummaryRequest := lower == "kalori" || lower == "makanan"
+	if !isSummaryRequest {
+		for _, phrase := range summaryPhrases {
+			if strings.Contains(lower, phrase) {
+				isSummaryRequest = true
+				break
+			}
+		}
+	}
+
+	if isSummaryRequest {
+		summary, err := u.nutritionUC.GetDailySummary(ctx, time.Now().In(u.timezone))
+		if err != nil {
+			u.logger.Error("failed to get daily nutrition summary", zap.Error(err))
+			return "Waduh, gagal mengambil rekap kalori hari ini wir 😅. Coba beberapa saat lagi ya.", nil
+		}
+		return FormatDailyNutritionSummary(summary, u.timezone), nil
+	}
+
+	// 3. User ingin mencatat makanan via teks
+	// Coba parse cepat menggunakan regex terlebih dahulu
+	foodName, calories, notes, ok := ParseMealTextInput(cleanMsg)
+	if !ok {
+		// Jika tidak ada kalori eksplisit, gunakan LLM untuk mengekstrak makanan & estimasi kalorinya
+		var err error
+		foodName, calories, notes, err = u.parseMealWithLLM(ctx, cleanMsg)
+		if err != nil || foodName == "" || calories <= 0 {
+			u.logger.Info("failed to parse meal text via LLM or not a meal message", zap.String("msg", cleanMsg), zap.Error(err))
+			return "Kalau mau catat kalori makanan, kamu bisa:\n1. 📸 Kirim foto makanan langsung\n2. 📝 Ketik nama makanan beserta kalorinya, contoh:\n   • *catat kalori Nasi Padang 700 kcal*\n   • *tadi makan Ayam Geprek 550 kalori*\n3. 💡 Atau sebutkan makananmu, contoh: *tadi makan bubur ayam 1 porsi*\n\nKetik *kalori hari ini* untuk mengecek asupan harianmu ya wir! 🍽️", nil
+		}
+	}
+
+	// Log meal
+	foodLog, summary, err := u.nutritionUC.LogMealFromText(ctx, foodName, calories, notes, time.Now().In(u.timezone))
+	if err != nil {
+		u.logger.Error("failed to log meal from text", zap.Error(err))
+		return "Waduh, gagal menyimpan catatan makanan wir 😅. Coba sesaat lagi ya.", nil
+	}
+
+	return FormatMealConfirmation(foodLog, summary), nil
+}
+
+// ParseMealTextInput parses food name, calorie count, and optional notes from user text via regex.
+func ParseMealTextInput(message string) (foodName string, calories int, notes string, ok bool) {
+	calRegex := regexp.MustCompile(`(?i)\b(\d{1,4})\s*(?:kcal|kalori|kal)\b`)
+	calMatch := calRegex.FindStringSubmatch(message)
+	if len(calMatch) < 2 {
+		return "", 0, "", false
+	}
+
+	calVal, err := strconv.Atoi(calMatch[1])
+	if err != nil || calVal <= 0 {
+		return "", 0, "", false
+	}
+
+	cleaned := calRegex.ReplaceAllString(message, " ")
+
+	// Extract notes if present (e.g. "catatan: tanpa sambal", "note 1 mangkok")
+	noteRegex := regexp.MustCompile(`(?i)(?:catatan|notes?|ket|keterangan)\s*[:=]?\s*(.+)`)
+	if nMatch := noteRegex.FindStringSubmatch(cleaned); len(nMatch) > 1 {
+		notes = strings.TrimSpace(nMatch[1])
+		cleaned = noteRegex.ReplaceAllString(cleaned, " ")
+	}
+
+	// Strip common command prefixes
+	prefixRegex := regexp.MustCompile(`(?i)^(?:\s*(?:tolong|bantu|coba|mohon)?\s*(?:catat|catatkan|log|simpan|tambah|tambahkan|input)?\s*(?:kalori|makanan|asupan|menu)?\s*(?:tadi\s*(?:pagi|siang|sore|malam)?)?\s*(?:barusan)?\s*(?:makan|sarapan|ngemil|minum)?\s*)+`)
+	cleaned = prefixRegex.ReplaceAllString(cleaned, "")
+	cleaned = strings.Trim(cleaned, " \t\r\n-,:;\"'")
+
+	if len(cleaned) < 2 {
+		return "", 0, "", false
+	}
+
+	// Clean up multiple spaces
+	multiSpaceRegex := regexp.MustCompile(`\s+`)
+	cleaned = multiSpaceRegex.ReplaceAllString(cleaned, " ")
+
+	return strings.Title(strings.ToLower(cleaned)), calVal, notes, true
+}
+
+func (u *chatUsecase) parseMealWithLLM(ctx context.Context, message string) (foodName string, calories int, notes string, err error) {
+	systemPrompt := `Kamu adalah asisten gizi yang mengekstrak informasi makanan dan mengestimasikan kalori dari pesan teks berbahasa Indonesia.
+Aturan:
+1. Identifikasi nama hidangan/makanan dan perkirakan total kalorinya (dalam integer kcal).
+2. Jika user menyebutkan jumlah/porsi (misal "1 porsi", "2 mangkok", "10 tusuk"), masukkan ke dalam "notes".
+3. Jika teks sama sekali bukan tentang makanan atau minuman yang dikonsumsi, kembalikan "food_name": "" dan "estimated_calories": 0.
+4. Output WAJIB HANYA berupa JSON valid tanpa markdown formatting atau backticks:
+{
+  "food_name": "Nama Makanan",
+  "estimated_calories": 450,
+  "notes": "keterangan porsi"
+}`
+
+	messages := []domain.ChatMessage{
+		{Role: domain.RoleSystem, Message: systemPrompt},
+		{Role: domain.RoleUser, Message: message},
+	}
+
+	reply, err := u.llm.Chat(ctx, messages)
+	if err != nil {
+		return "", 0, "", err
+	}
+
+	reply = strings.TrimSpace(reply)
+	if idx := strings.Index(reply, "{"); idx != -1 {
+		if lastIdx := strings.LastIndex(reply, "}"); lastIdx != -1 && lastIdx > idx {
+			reply = reply[idx : lastIdx+1]
+		}
+	}
+
+	var result struct {
+		FoodName          string `json:"food_name"`
+		EstimatedCalories int    `json:"estimated_calories"`
+		Notes             string `json:"notes"`
+	}
+
+	if err := json.Unmarshal([]byte(reply), &result); err != nil {
+		return "", 0, "", err
+	}
+
+	return result.FoodName, result.EstimatedCalories, result.Notes, nil
 }
 
 // ParseBudgetSettingInput parses salary amount and warning threshold percentage from text.

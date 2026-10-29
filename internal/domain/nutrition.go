@@ -66,6 +66,8 @@ type NutritionUsecase interface {
 	LogMealFromImage(ctx context.Context, imageData []byte, mimeType string, notes string) (*FoodLog, *DailyNutritionSummary, error)
 	LogMealFromText(ctx context.Context, foodName string, calories int, notes string, loggedAt time.Time) (*FoodLog, *DailyNutritionSummary, error)
 	GetDailySummary(ctx context.Context, date time.Time) (*DailyNutritionSummary, error)
+	DeleteMeal(ctx context.Context, id int64) error
+	DeleteLatestMeal(ctx context.Context) (*FoodLog, error)
 }
 
 // NutritionParser defines the contract for vision-based meal calorie recognition.

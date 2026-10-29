@@ -431,6 +431,8 @@ func (s *WhatsAppClient) handleMenu(evt *events.Message) {
 	sb.WriteString("-Reminder \n")
 	sb.WriteString("-Expense(Bisa kirim foto struk) \n")
 	sb.WriteString("-Kalori(Kirim foto makanan untuk estimasi kalori & gizi) \n")
+	sb.WriteString("-Workout(Catat olahraga, durasi, dan kalori terbakar) \n")
+	sb.WriteString("-Daily Briefing & Nightly Debrief (Ketik 'briefing' atau 'debrief' / otomatis dikirim pagi & malam) \n")
 	sb.WriteString("-Search \n")
 	sb.WriteString("-Reset \n")
 	sb.WriteString("Silakan pilih fitur dengan mengirim pesan sesuai dengan perintah ya\n")

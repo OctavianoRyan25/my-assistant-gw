@@ -216,6 +216,7 @@ Intent yang tersedia:
 - "reset": user ingin menghapus/mereset seluruh riwayat percakapan
 - "general_chat": obrolan umum, pertanyaan konsep, brainstorming, curhat, diskusi, tindak lanjut dari obrolan sebelumnya, atau hal yang tidak masuk kategori di atas
 - "budget": user ingin MENCATAT/MENGUBAH penghasilan atau gaji bulanan, MELIHAT penghasilan bulan ini, menanyakan SISA uang bulan ini (setelah dikurangi pengeluaran), atau mengatur/menghapus pengingat penghasilan
+- "calorie": user ingin melihat jumlah kalori dari makanan yang sudah dimakan hari ini
 
 ATURAN PENTING:
 1. Fokus pada pesan terbaru user (bagian "PESAN TERBARU:"). Konteks hanya digunakan untuk memahami referensi ambigu.
@@ -245,6 +246,7 @@ Contoh:
 - "keluar 50rb buat makan" → {"intent": "expense", "confidence": 0.97}
 - "beli kopi 25rb" → {"intent": "expense", "confidence": 0.96}
 - "bayar ojol 15000" → {"intent": "expense", "confidence": 0.97}
+- "tadi beli nasgor 15k" → {"intent": "expense", "confidence": 0.97} 
 - "laporan pengeluaran bulan ini" → {"intent": "expense", "confidence": 0.96}
 - "list pengeluaran" → {"intent": "expense", "confidence": 0.97}
 - "daftar pengeluaran" → {"intent": "expense", "confidence": 0.97}
@@ -278,7 +280,8 @@ Contoh:
 - "uangku tinggal berapa" → {"intent": "budget", "confidence": 0.96}
 - "masih sisa berapa ya bulan ini" → {"intent": "budget", "confidence": 0.95}
 - "penghasilan bulan ini berapa" → {"intent": "budget", "confidence": 0.95}
-- "ingatkan aku catat gaji tiap tanggal 25" → {"intent": "budget", "confidence": 0.93}`
+- "ingatkan aku catat gaji tiap tanggal 25" → {"intent": "budget", "confidence": 0.93}
+- "total kalori hari ini" → {"intent": "calorie", "confidence": 0.98}`
 
 	reqBody := geminiRequest{
 		SystemInstruction: &geminiContent{

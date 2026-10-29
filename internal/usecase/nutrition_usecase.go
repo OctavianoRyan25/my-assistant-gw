@@ -145,6 +145,32 @@ func (u *nutritionUsecase) GetDailySummary(ctx context.Context, date time.Time) 
 	return summary, nil
 }
 
+func (u *nutritionUsecase) DeleteMeal(ctx context.Context, id int64) error {
+	if err := u.repo.Delete(ctx, id); err != nil {
+		return fmt.Errorf("nutrition usecase delete meal: %w", err)
+	}
+	u.logger.Info("food log deleted", zap.Int64("id", id))
+	return nil
+}
+
+func (u *nutritionUsecase) DeleteLatestMeal(ctx context.Context) (*domain.FoodLog, error) {
+	now := time.Now().In(u.timezone)
+	summary, err := u.GetDailySummary(ctx, now)
+	if err != nil {
+		return nil, fmt.Errorf("fetch today summary for delete: %w", err)
+	}
+	if summary == nil || len(summary.Meals) == 0 {
+		return nil, fmt.Errorf("no meals found for today")
+	}
+
+	latest := summary.Meals[len(summary.Meals)-1]
+	if err := u.repo.Delete(ctx, latest.ID); err != nil {
+		return nil, fmt.Errorf("delete latest food log: %w", err)
+	}
+	u.logger.Info("latest food log deleted", zap.Int64("id", latest.ID), zap.String("food", latest.FoodName))
+	return latest, nil
+}
+
 // FormatMealConfirmation formats logged meal information along with daily summary.
 func FormatMealConfirmation(food *domain.FoodLog, summary *domain.DailyNutritionSummary) string {
 	var sb strings.Builder
@@ -172,4 +198,50 @@ func FormatMealConfirmation(food *domain.FoodLog, summary *domain.DailyNutrition
 	}
 
 	return sb.String()
+}
+
+// FormatDailyNutritionSummary formats the overall daily calorie recap and meal list.
+func FormatDailyNutritionSummary(summary *domain.DailyNutritionSummary, tz *time.Location) string {
+	if summary == nil {
+		return "Belum ada catatan kalori untuk hari ini wir. Yuk mulai catat dengan kirim foto makanan atau ketik *catat kalori <nama makanan> <kalori> kcal*! 🍽️"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("🍽️ *Status & Rekap Kalori Hari Ini*\n\n")
+
+	// Total asupan & target
+	sb.WriteString(fmt.Sprintf("• Terkonsumsi: *%d kcal* / Target: *%d kcal*\n", summary.TotalCalories, summary.TargetCalories))
+	if summary.RemainingCalories >= 0 {
+		sb.WriteString(fmt.Sprintf("• Sisa Kuota: *%d kcal* ✅\n", summary.RemainingCalories))
+	} else {
+		sb.WriteString(fmt.Sprintf("• Melebihi Target: *+%d kcal* ⚠️\n", -summary.RemainingCalories))
+	}
+
+	// Makronutrisi
+	if summary.TotalProtein > 0 || summary.TotalCarbs > 0 || summary.TotalFat > 0 {
+		sb.WriteString(fmt.Sprintf("• Total Makro: Protein: *%.0fg* | Karbo: *%.0fg* | Lemak: *%.0fg*\n",
+			summary.TotalProtein, summary.TotalCarbs, summary.TotalFat))
+	}
+
+	// Daftar hidangan hari ini
+	if len(summary.Meals) > 0 {
+		sb.WriteString("\n📋 *Daftar Makanan Hari Ini:*\n")
+		for _, m := range summary.Meals {
+			timeStr := m.LoggedAt.In(tz).Format("15:04")
+			notesStr := ""
+			if m.Notes != "" {
+				notesStr = fmt.Sprintf(" (%s)", m.Notes)
+			}
+			sb.WriteString(fmt.Sprintf("• [%s] *%s* — ~%d kcal%s (ID: %d)\n", timeStr, m.FoodName, m.EstimatedCalories, notesStr, m.ID))
+		}
+		sb.WriteString("\n_Ketik *hapus makanan <ID>* atau *hapus makanan terakhir* untuk membatalkan catatan._\n")
+	} else {
+		sb.WriteString("\n_Belum ada hidangan yang dicatat hari ini._\n")
+	}
+
+	if summary.Advice != "" {
+		sb.WriteString(fmt.Sprintf("\n💡 %s", summary.Advice))
+	}
+
+	return strings.TrimSpace(sb.String())
 }

@@ -10,6 +10,9 @@ type Handlers struct {
 	WebhookHandler  *handler.WebhookHandler
 	ReminderHandler *handler.ReminderHandler
 	ExpenseHandler  *handler.ExpenseHandler
+	ProfileHandler  *handler.ProfileHandler
+	StatsHandler    *handler.StatsHandler
+	BriefingHandler *handler.BriefingHandler
 }
 
 // RegisterRoutes wires all API routes to their respective handlers.
@@ -41,4 +44,32 @@ func RegisterRoutes(e *echo.Echo, h *Handlers) {
 	expenses.POST("", h.ExpenseHandler.Record)
 	expenses.GET("/report", h.ExpenseHandler.GetMonthlyReport)
 	expenses.GET("/detail", h.ExpenseHandler.GetDetailMonthlyReport)
+
+	// Profile
+	if h.ProfileHandler != nil {
+		profile := api.Group("/profile")
+		profile.GET("", h.ProfileHandler.Get)
+		profile.PUT("", h.ProfileHandler.Update)
+	}
+
+	// Stats & Aggregations
+	if h.StatsHandler != nil {
+		stats := api.Group("/stats")
+		stats.GET("/overview", h.StatsHandler.GetOverview)
+
+		nutrition := api.Group("/nutrition")
+		nutrition.GET("/today", h.StatsHandler.GetNutritionToday)
+
+		workouts := api.Group("/workouts")
+		workouts.GET("", h.StatsHandler.GetWorkouts)
+	}
+
+	// Proactive Briefings
+	if h.BriefingHandler != nil {
+		briefing := api.Group("/briefing")
+		briefing.GET("/daily", h.BriefingHandler.GetDailyBriefing)
+		briefing.POST("/daily/send", h.BriefingHandler.SendDailyBriefing)
+		briefing.GET("/nightly", h.BriefingHandler.GetNightlyDebrief)
+		briefing.POST("/nightly/send", h.BriefingHandler.SendNightlyDebrief)
+	}
 }

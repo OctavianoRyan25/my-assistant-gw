@@ -139,6 +139,8 @@ Intent yang tersedia:
 - "reminder": user ingin MEMBUAT, MELIHAT DAFTAR, MENGUBAH, atau MENGHAPUS reminder/jadwal/alarm
 - "expense": user ingin MENCATAT pengeluaran uang BARU, MELIHAT DAFTAR/LIST pengeluaran, MELIHAT laporan/rekap, atau menanyakan total biaya pengeluaran
 - "workout": user MELAPORKAN aktivitas olahraga yang sudah/baru dilakukan, atau ingin MELIHAT/MENGHAPUS riwayat workout
+- "budget": user ingin MENCATAT/MENGUBAH penghasilan atau gaji bulanan, MELIHAT penghasilan, menanyakan SISA uang bulan ini, atau threshold peringatan
+- "calorie": user ingin MENCATAT makanan/kalori secara teks, MELIHAT jumlah/rekap kalori hari ini, atau MENGHAPUS catatan makanan
 - "search": user menanyakan informasi terkini, berita, atau hal yang butuh info real-time
 - "reset": user ingin mereset/menghapus riwayat percakapan
 - "general_chat": percakapan umum, brainstorming, diskusi, atau hal lainnya

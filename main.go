@@ -101,14 +101,15 @@ func main() {
 	}
 	workoutUC := usecase.NewWorkoutUsecase(workoutRepo, workoutParser, waSender, cfg.WAPhoneNumber, log, tz)
 	budgetUC  := usecase.NewBudgetUsecase(budgetRepo, expenseRepo, userProfileUC, log, tz)
+	briefingUC := usecase.NewBriefingUsecase(reminderRepo, expenseUC, budgetUC, nutritionUC, workoutRepo, userProfileUC, waSender, cfg.WAPhoneNumber, log, tz)
 
-	chatUC := usecase.NewChatUsecase(chatRepo, memoryRepo, llmClient, searchClient, reminderUC, expenseUC, nutritionUC, workoutUC, budgetUC, log, tz)
+	chatUC := usecase.NewChatUsecase(chatRepo, memoryRepo, llmClient, searchClient, reminderUC, expenseUC, nutritionUC, workoutUC, budgetUC, briefingUC, log, tz)
 
 	// ── 8. Register WhatsApp message handler ──────────────────────────────────
 	// waSender.RegisterMessageHandler(chatUC)
 
 	// ── 9. Scheduler ─────────────────────────────────────────────────────────
-	sched := scheduler.NewScheduler(reminderUC, expenseUC, workoutUC, log, tz)
+	sched := scheduler.NewScheduler(reminderUC, expenseUC, workoutUC, briefingUC, log, tz)
 	sched.Start()
 	defer sched.Stop()
 	log.Info("scheduler started")
@@ -140,6 +141,9 @@ func main() {
 		WebhookHandler:  handler.NewWebhookHandler(chatUC, log),
 		ReminderHandler: handler.NewReminderHandler(reminderUC, log, tz),
 		ExpenseHandler:  handler.NewExpenseHandler(expenseUC, log, tz),
+		ProfileHandler:  handler.NewProfileHandler(userProfileUC, budgetUC, log),
+		StatsHandler:    handler.NewStatsHandler(userProfileUC, budgetUC, expenseUC, nutritionUC, workoutUC, reminderUC, log, tz),
+		BriefingHandler: handler.NewBriefingHandler(briefingUC, log),
 	}
 	routes.RegisterRoutes(e, handlers)
 
