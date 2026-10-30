@@ -81,8 +81,14 @@ type LLMClient interface {
 	ParseReceiptFromImage(ctx context.Context, imageData []byte, mimeType string) (*ReceiptParsed, error)
 	// ExtractMemories analyzes a user message or conversation turn and extracts newly discovered long-term facts or traits.
 	ExtractMemories(ctx context.Context, conversation string) ([]MemoryItem, error)
-	// ParseTranscription uses audio AI to extract expense items from an audio message.
-	// ParseTranscription(ctx context.Context, audioData []byte, mimeType string) (string, error)
+	// ParseToolCalls extracts zero, one, or multiple tool calls and a conversational response from user text.
+	ParseToolCalls(ctx context.Context, message string) ([]ToolCall, string, error)
+}
+
+// ToolCall represents an intent to call a specific assistant tool with its arguments.
+type ToolCall struct {
+	Name string                 `json:"name"`
+	Args map[string]interface{} `json:"args"`
 }
 
 // ReminderParsed is the structured data extracted from a natural language reminder message.

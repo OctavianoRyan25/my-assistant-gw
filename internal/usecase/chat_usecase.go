@@ -386,54 +386,338 @@ func (u *chatUsecase) handleWorkout(ctx context.Context, message string) (string
 }
 
 // HandleAudioMessage processes an audio message sent via WhatsApp (e.g. a voice note).
+// It transcribes the voice note and executes Native LLM Tool Calling to support multiple intents in one voice message.
 func (u *chatUsecase) HandleAudioMessage(ctx context.Context, audioData []byte, mimeType string) (string, error) {
 	u.logger.Info("audio message received", zap.String("mimeType", mimeType), zap.Int("bytes", len(audioData)))
 
-	// Clasify audio intent
+	// 1. Transkrip & klasifikasi audio
 	intent, err := u.llm.ClassifyAudioIntent(ctx, audioData, mimeType)
 	if err != nil {
-		u.logger.Error("intent classification failed, falling back to general chat", zap.Error(err))
-		intent = &domain.IntentResult{Intent: domain.IntentGeneralChat, Confidence: 0.5}
+		u.logger.Error("intent audio classification failed", zap.Error(err))
+		return "Waduh, pesan suara gagal diproses wir 😅. Pastikan suaranya cukup jelas dan coba kirim ulang ya.", nil
 	}
-	u.logger.Info("intent classified", zap.String("intent", intent.Intent), zap.Float64("confidence", intent.Confidence))
 
-	// 3. Route to handler
+	rawMessage := strings.TrimSpace(intent.RawMessage)
+	u.logger.Info("audio transcribed", zap.String("transcript", rawMessage), zap.String("intent", intent.Intent), zap.Float64("confidence", intent.Confidence))
+
+	// Jika audio hening atau tidak jelas
+	if rawMessage == "" || strings.Contains(strings.ToLower(rawMessage), "ora krungu") {
+		return "Ora krungu njir, suaramu alon atau audionya kurang jelas. Coba kirim VN lagi dengan suara lebih lantang ya wir! 🎙️", nil
+	}
+
+	// 2. Multi-Intent / Native Tool Calling
+	// Coba parsing dan eksekusi tool calls dari transkrip ucapan user
+	toolCalls, convReply, toolErr := u.llm.ParseToolCalls(ctx, rawMessage)
+	if toolErr == nil && len(toolCalls) > 0 {
+		reply, execErr := u.executeToolCalls(ctx, toolCalls, rawMessage, convReply)
+		if execErr == nil && reply != "" {
+			if err := u.saveMessage(ctx, domain.RoleUser, rawMessage); err != nil {
+				u.logger.Warn("failed to save user audio transcript", zap.Error(err))
+			}
+			if err := u.saveMessage(ctx, domain.RoleAssistant, reply); err != nil {
+				u.logger.Warn("failed to save assistant reply", zap.Error(err))
+			}
+			go u.analyzeMemoriesAsync(rawMessage)
+			return reply, nil
+		}
+		u.logger.Warn("executeToolCalls failed, falling back to single-intent switch", zap.Error(execErr))
+	}
+
+	// 3. Fallback: Single-intent routing jika tidak ada tool calls terdeteksi atau ParseToolCalls error
 	var reply string
 	switch intent.Intent {
 	case domain.IntentReminder:
-		reply, err = u.handleReminder(ctx, intent.RawMessage)
+		reply, err = u.handleReminder(ctx, rawMessage)
 	case domain.IntentExpense:
-		reply, err = u.handleExpense(ctx, intent.RawMessage)
+		reply, err = u.handleExpense(ctx, rawMessage)
 	case domain.IntentWorkout:
-		reply, err = u.handleWorkout(ctx, intent.RawMessage)
+		reply, err = u.handleWorkout(ctx, rawMessage)
+	case domain.IntentCalorie:
+		reply, err = u.handleCalorie(ctx, rawMessage)
+	case domain.IntentBudget:
+		reply, err = u.handleBudget(ctx, rawMessage)
 	case domain.IntentSearch:
-		reply, err = u.handleSearch(ctx, intent.RawMessage)
+		reply, err = u.handleSearch(ctx, rawMessage)
 	case domain.IntentReset:
 		reply, err = u.handleReset(ctx)
 	default:
-		reply, err = u.handleGeneralChat(ctx, intent.RawMessage)
+		if convReply != "" {
+			reply = convReply
+		} else {
+			reply, err = u.handleGeneralChat(ctx, rawMessage)
+		}
 	}
 
 	if err != nil {
-		u.logger.Error("handler error", zap.String("intent", intent.Intent), zap.Error(err))
-		reply = "Gw ga paham bahasa lu Jawa"
+		u.logger.Error("audio fallback handler error", zap.String("intent", intent.Intent), zap.Error(err))
+		reply = "Maaf wir, ada kendala saat memproses isi pesan suaramu. Coba lagi ya! 🙏"
 	}
 
-	// Save user message to history
-	if err := u.saveMessage(ctx, domain.RoleUser, intent.RawMessage); err != nil {
+	// 4. Save to history & analyze memory
+	if err := u.saveMessage(ctx, domain.RoleUser, rawMessage); err != nil {
 		u.logger.Warn("failed to save user message", zap.Error(err))
 	}
+	go u.analyzeMemoriesAsync(rawMessage)
 
-	if strings.TrimSpace(intent.RawMessage) != "" {
-		go u.analyzeMemoriesAsync(intent.RawMessage)
-	}
-
-	// Save assistant reply to history
 	if err := u.saveMessage(ctx, domain.RoleAssistant, reply); err != nil {
 		u.logger.Warn("failed to save assistant message", zap.Error(err))
 	}
 
 	return reply, nil
+}
+
+// executeToolCalls executes a batch of tool calls extracted by the LLM and compiles a unified response.
+func (u *chatUsecase) executeToolCalls(ctx context.Context, toolCalls []domain.ToolCall, rawMessage, conversationalReply string) (string, error) {
+	var executedActions []string
+
+	for _, tc := range toolCalls {
+		u.logger.Info("executing tool call", zap.String("tool", tc.Name), zap.Any("args", tc.Args))
+
+		switch tc.Name {
+		case "create_reminder":
+			title := getToolString(tc.Args, "title")
+			schedStr := getToolString(tc.Args, "scheduled_at")
+			recVal := getToolString(tc.Args, "recurrence")
+			var recPtr *string
+			if recVal != "" && recVal != "null" {
+				recPtr = &recVal
+			}
+
+			schedTime, err := parseScheduledTime(schedStr, u.timezone)
+			if err != nil {
+				u.logger.Warn("tool create_reminder: invalid scheduled_at", zap.String("raw", schedStr), zap.Error(err))
+				continue
+			}
+
+			if u.reminderUC != nil && title != "" {
+				rem, err := u.reminderUC.CreateReminder(ctx, title, schedTime, recPtr)
+				if err != nil {
+					u.logger.Error("tool create_reminder error", zap.Error(err))
+					continue
+				}
+				if rem != nil {
+					recInfo := "sekali"
+					if rem.Recurrence != nil && *rem.Recurrence != "" {
+						recInfo = *rem.Recurrence
+					}
+					executedActions = append(executedActions, fmt.Sprintf("📌 *Pengingat Dibuat:* %s (%s, %s)",
+						rem.Title, rem.ScheduledAt.In(u.timezone).Format("02 Jan 15:04 WIB"), recInfo))
+				}
+			}
+
+		case "record_expense":
+			amount := getToolFloat(tc.Args, "amount")
+			category := getToolString(tc.Args, "category")
+			description := getToolString(tc.Args, "description")
+			if category == "" {
+				category = "Lainnya"
+			}
+
+			if u.expenseUC != nil && amount > 0 {
+				exp, err := u.expenseUC.RecordExpense(ctx, amount, category, description, time.Now().In(u.timezone))
+				if err != nil {
+					u.logger.Error("tool record_expense error", zap.Error(err))
+					continue
+				}
+				if exp != nil {
+					descPart := ""
+					if exp.Description != "" {
+						descPart = fmt.Sprintf(" — %s", exp.Description)
+					}
+					actionMsg := fmt.Sprintf("💸 *Pengeluaran Dicatat:* Rp %s (%s%s)", formatRupiah(exp.Amount), exp.Category, descPart)
+					executedActions = append(executedActions, actionMsg)
+
+					if u.budgetUC != nil {
+						_, alertTriggered, _ := u.budgetUC.CheckExpenseThreshold(ctx, exp.Amount)
+						if alertTriggered {
+							executedActions = append(executedActions, "⚠️ *Peringatan Budget:* Pengeluaran ini telah melewati batas peringatan anggaranmu!")
+						}
+					}
+				}
+			}
+
+		case "log_meal":
+			foodName := getToolString(tc.Args, "food_name")
+			calories := getToolInt(tc.Args, "calories")
+			notes := getToolString(tc.Args, "notes")
+
+			if u.nutritionUC != nil && foodName != "" {
+				foodLog, summary, err := u.nutritionUC.LogMealFromText(ctx, foodName, calories, notes, time.Now().In(u.timezone))
+				if err != nil {
+					u.logger.Error("tool log_meal error", zap.Error(err))
+					continue
+				}
+				if foodLog != nil {
+					notePart := ""
+					if foodLog.Notes != "" {
+						notePart = fmt.Sprintf(" • %s", foodLog.Notes)
+					}
+					summaryPart := ""
+					if summary != nil {
+						summaryPart = fmt.Sprintf(" [Total Hari Ini: %d / %d kcal]", summary.TotalCalories, summary.TargetCalories)
+					}
+					executedActions = append(executedActions, fmt.Sprintf("🍽️ *Makanan Tercatat:* %s (~%d kcal%s)%s",
+						foodLog.FoodName, foodLog.EstimatedCalories, notePart, summaryPart))
+				}
+			}
+
+		case "record_workout":
+			title := getToolString(tc.Args, "title")
+			wType := getToolString(tc.Args, "type")
+			dur := getToolInt(tc.Args, "duration_minutes")
+			cal := getToolInt(tc.Args, "calories_burned")
+			dist := getToolFloat(tc.Args, "distance_meters")
+			desc := getToolString(tc.Args, "description")
+
+			if u.workoutUC != nil && title != "" {
+				workout, err := u.workoutUC.RecordWorkout(ctx, &domain.Workout{
+					Title:           title,
+					Type:            wType,
+					DurationMinutes: dur,
+					CaloriesBurned:  cal,
+					DistanceMeters:  dist,
+					Description:     desc,
+					LoggedAt:        time.Now().In(u.timezone),
+				})
+				if err != nil {
+					u.logger.Error("tool record_workout error", zap.Error(err))
+					continue
+				}
+				if workout != nil {
+					details := []string{}
+					if workout.DurationMinutes > 0 {
+						details = append(details, fmt.Sprintf("%d menit", workout.DurationMinutes))
+					}
+					if workout.CaloriesBurned > 0 {
+						details = append(details, fmt.Sprintf("~%d kcal 🔥", workout.CaloriesBurned))
+					}
+					if workout.DistanceMeters > 0 {
+						if workout.DistanceMeters >= 1000 {
+							details = append(details, fmt.Sprintf("%.2f km", workout.DistanceMeters/1000.0))
+						} else {
+							details = append(details, fmt.Sprintf("%.0f m", workout.DistanceMeters))
+						}
+					}
+					detailStr := ""
+					if len(details) > 0 {
+						detailStr = fmt.Sprintf(" (%s)", strings.Join(details, " • "))
+					}
+					executedActions = append(executedActions, fmt.Sprintf("🏋️ *Workout Dicatat:* %s%s", workout.Title, detailStr))
+				}
+			}
+
+		case "get_budget_status":
+			if u.budgetUC != nil {
+				now := time.Now().In(u.timezone)
+				status, err := u.budgetUC.GetBudgetStatus(ctx, now.Year(), int(now.Month()))
+				if err == nil && status != nil {
+					executedActions = append(executedActions, fmt.Sprintf("💰 *Status Budget:* Sisa Rp %s (Terpakai %.1f%%)",
+						formatRupiah(status.Remaining), status.SpentPercentage))
+				}
+			}
+
+		case "get_calorie_summary":
+			if u.nutritionUC != nil {
+				now := time.Now().In(u.timezone)
+				summary, err := u.nutritionUC.GetDailySummary(ctx, now)
+				if err == nil && summary != nil {
+					executedActions = append(executedActions, fmt.Sprintf("🥗 *Kalori Hari Ini:* %d / %d kcal (Sisa: %d kcal)",
+						summary.TotalCalories, summary.TargetCalories, summary.RemainingCalories))
+				}
+			}
+
+		case "get_daily_briefing":
+			if u.briefingUC != nil {
+				briefing, err := u.briefingUC.GetDailyBriefing(ctx)
+				if err == nil && briefing != "" {
+					executedActions = append(executedActions, briefing)
+				}
+			}
+
+		case "get_nightly_debrief":
+			if u.briefingUC != nil {
+				debrief, err := u.briefingUC.GetNightlyDebrief(ctx)
+				if err == nil && debrief != "" {
+					executedActions = append(executedActions, debrief)
+				}
+			}
+
+		case "search_web":
+			query := getToolString(tc.Args, "query")
+			if u.searchClient != nil && query != "" {
+				res, err := u.searchClient.Search(ctx, query, 3)
+				if err == nil && len(res) > 0 {
+					executedActions = append(executedActions, fmt.Sprintf("🔍 *Hasil Pencarian:* %s (%s)", res[0].Title, res[0].URL))
+				}
+			}
+
+		default:
+			u.logger.Warn("unknown tool call name", zap.String("name", tc.Name))
+		}
+	}
+
+	if len(executedActions) == 0 && conversationalReply == "" {
+		return "", fmt.Errorf("no tools executed successfully and no conversational reply")
+	}
+
+	var sb strings.Builder
+	sb.WriteString("🎙️ *Pesan Suara Terproses:*\n")
+	sb.WriteString(fmt.Sprintf("_\"%s\"_\n\n", strings.TrimSpace(rawMessage)))
+
+	if len(executedActions) > 0 {
+		sb.WriteString("✅ *Aksi yang Berhasil Dijalankan:*\n")
+		for _, action := range executedActions {
+			sb.WriteString(fmt.Sprintf("• %s\n", action))
+		}
+	}
+
+	if conversationalReply != "" {
+		if len(executedActions) > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(conversationalReply)
+	}
+
+	return strings.TrimSpace(sb.String()), nil
+}
+
+func getToolString(args map[string]interface{}, key string) string {
+	if args == nil {
+		return ""
+	}
+	if v, ok := args[key]; ok && v != nil {
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
+	return ""
+}
+
+func getToolFloat(args map[string]interface{}, key string) float64 {
+	if args == nil {
+		return 0
+	}
+	v, ok := args[key]
+	if !ok || v == nil {
+		return 0
+	}
+	switch val := v.(type) {
+	case float64:
+		return val
+	case float32:
+		return float64(val)
+	case int:
+		return float64(val)
+	case int64:
+		return float64(val)
+	case string:
+		f, _ := strconv.ParseFloat(strings.TrimSpace(val), 64)
+		return f
+	default:
+		return 0
+	}
+}
+
+func getToolInt(args map[string]interface{}, key string) int {
+	return int(getToolFloat(args, key))
 }
 
 // handleReceiptReply handles user replies when a pending receipt is awaiting confirmation.

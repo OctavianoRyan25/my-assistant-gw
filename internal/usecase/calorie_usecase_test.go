@@ -55,6 +55,9 @@ func (m *mockChatLLM) ParseReceiptFromImage(ctx context.Context, imageData []byt
 func (m *mockChatLLM) ExtractMemories(ctx context.Context, conversation string) ([]domain.MemoryItem, error) {
 	return nil, nil
 }
+func (m *mockChatLLM) ParseToolCalls(ctx context.Context, message string) ([]domain.ToolCall, string, error) {
+	return nil, "", nil
+}
 
 type calorieMockNutritionUC struct {
 	summary       *domain.DailyNutritionSummary

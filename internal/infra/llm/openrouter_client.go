@@ -373,3 +373,106 @@ func (c *openRouterClient) ClassifyImageIntent(ctx context.Context, imageData []
 	return  nil, fmt.Errorf("fitur image tidak tersedia saat menggunakan OpenRouter. Gunakan provider Gemini (LLM_PROVIDER=gemini) untuk mengaktifkan fitur ini")
 }
 
+// ParseToolCalls extracts multi-intent tool calls and conversational response using OpenRouter API.
+func (c *openRouterClient) ParseToolCalls(ctx context.Context, message string) ([]domain.ToolCall, string, error) {
+	nowStr := time.Now().Format("Monday, 02 January 2006 15:04 WIB")
+	systemPrompt := `Kamu adalah AI dispatcher tool untuk asisten personal "GW-AI".
+Waktu saat ini: ` + nowStr + `
+
+Tugasmu:
+Analisa pesan/transkrip suara pengguna secara mendalam. Pengguna sering mengirim pesan suara panjang yang berisi SATU ATAU LEBIH perintah sekaligus (multi-intent).
+Tentukan tool apa saja yang perlu dipanggil dan ekstrak parameternya.
+
+DAFTAR TOOL YANG TERSEDIA:
+1. "create_reminder":
+   Gunakan jika user ingin membuat pengingat/jadwal/alarm.
+   Argumen:
+   - "title" (string): judul pengingat
+   - "scheduled_at" (string): waktu jadwal format "YYYY-MM-DD HH:MM" (hitung berdasarkan waktu saat ini)
+   - "recurrence" (string|null): "daily", "weekly", atau null jika sekali jalan
+
+2. "record_expense":
+   Gunakan jika user menyebutkan pengeluaran uang/belanja/bayar sesuatu.
+   Argumen:
+   - "amount" (number): nominal pengeluaran dalam Rupiah (angka bulat)
+   - "category" (string): "Makanan", "Transportasi", "Belanja", "Tagihan", "Kesehatan", "Pendidikan", "Hiburan", atau "Lainnya"
+   - "description" (string): rincian pengeluaran
+
+3. "log_meal":
+   Gunakan jika user menyebutkan makanan/minuman yang dikonsumsi dan/atau kalorinya.
+   Argumen:
+   - "food_name" (string): nama hidangan/makanan
+   - "calories" (number): jumlah kalori dalam kcal (estimasi realistis jika user tidak sebutkan)
+   - "notes" (string): porsi atau catatan tambahan
+
+4. "record_workout":
+   Gunakan jika user melaporkan aktivitas olahraga yang sudah dilakukan.
+   Argumen:
+   - "title" (string): nama latihan (contoh: "Jogging Pagi", "Gym Push Day")
+   - "type" (string): "running", "walking", "cycling", "swimming", "gym", "cardio", "sports", atau "other"
+   - "duration_minutes" (number): durasi olahraga dalam menit (0 jika tidak ada)
+   - "calories_burned" (number): estimasi kalori terbakar (angka bulat, 0 jika tidak ada)
+   - "distance_meters" (number): jarak tempuh dlm meter jika olahraga lari/sepeda (0 jika tidak ada)
+   - "description" (string): catatan tambahan
+
+5. "get_budget_status":
+   Gunakan jika user menanyakan sisa uang/budget/gaji bulan ini.
+   Argumen: {}
+
+6. "get_calorie_summary":
+   Gunakan jika user menanyakan rekap/total kalori atau apa saja yang sudah dimakan hari ini.
+   Argumen: {}
+
+7. "get_daily_briefing":
+   Gunakan jika user meminta briefing pagi atau agenda hari ini.
+   Argumen: {}
+
+8. "get_nightly_debrief":
+   Gunakan jika user meminta evaluasi malam atau rekap hari ini.
+   Argumen: {}
+
+9. "search_web":
+   Gunakan jika user menanyakan info terkini atau hal yang butuh browsing internet.
+   Argumen:
+   - "query" (string): kata kunci pencarian
+
+ATURAN PENTING:
+- Jika ada beberapa perintah dalam satu pesan (contoh: makan + bayar + buat reminder + olahraga), PANGGIL SEMUA TOOL YANG RELEVAN secara berurutan dalam array "tool_calls".
+- Jika user tidak meminta aksi apapun (hanya ngobrol santai, curhat, menyapa, bertanya hal umum), kosongkan "tool_calls": [] dan tulis balasan ramah di "conversational_response" dengan kepribadian teman santai ("wir", "le", dll).
+- Jika ada tool calls DAN user juga menyampaikan kalimat obrolan/pertanyaan, isi "conversational_response" dengan respon singkat untuk bagian obrolannya.
+
+FORMAT OUTPUT WAJIB HANYA JSON:
+{
+  "tool_calls": [
+    {
+      "name": "<nama_tool>",
+      "args": { ... }
+    }
+  ],
+  "conversational_response": "<respon santai jika ada, atau kosongkan>"
+}`
+
+	messages := []orMessage{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: message},
+	}
+
+	raw, err := c.callAPI(ctx, messages)
+	if err != nil {
+		return nil, "", err
+	}
+
+	raw = cleanJSONResponse(raw)
+
+	var parsed struct {
+		ToolCalls              []domain.ToolCall `json:"tool_calls"`
+		ConversationalResponse string            `json:"conversational_response"`
+	}
+
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil, "", fmt.Errorf("openrouter unmarshal tool calls: %w (raw: %s)", err, raw)
+	}
+
+	return parsed.ToolCalls, parsed.ConversationalResponse, nil
+}
+
