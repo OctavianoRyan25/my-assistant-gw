@@ -57,14 +57,14 @@ func main() {
 	log.Info("database connected")
 
 	// ── 5. Repositories ──────────────────────────────────────────────────────
-	reminderRepo  := repository.NewReminderRepository(db)
-	expenseRepo   := repository.NewExpenseRepository(db)
-	chatRepo      := repository.NewChatRepository(db)
-	memoryRepo    := repository.NewMemoryRepository(db)
+	reminderRepo := repository.NewReminderRepository(db)
+	expenseRepo := repository.NewExpenseRepository(db)
+	chatRepo := repository.NewChatRepository(db)
+	memoryRepo := repository.NewMemoryRepository(db)
 	nutritionRepo := repository.NewNutritionRepository(db)
 	userProfileRepo := repository.NewUserProfileRepository(db)
 	workoutRepo := repository.NewWorkoutRepository(db)
-	budgetRepo  := repository.NewBudgetRepository(db)
+	budgetRepo := repository.NewBudgetRepository(db)
 
 	// ── 6. Infrastructure clients ─────────────────────────────────────────────
 	var llmClient domain.LLMClient
@@ -85,7 +85,7 @@ func main() {
 
 	// ── 7. Use cases (business logic) ────────────────────────────────────────
 	reminderUC := usecase.NewReminderUsecase(reminderRepo, llmClient, waSender, cfg.WAPhoneNumber, log, tz)
-	expenseUC  := usecase.NewExpenseUsecase(expenseRepo, waSender, cfg.WAPhoneNumber, log, tz)
+	expenseUC := usecase.NewExpenseUsecase(expenseRepo, waSender, cfg.WAPhoneNumber, log, tz)
 
 	// UserProfile usecase (diperlukan untuk menghitung target kalori harian dari TB & BB)
 	var nutritionParser domain.NutritionParser
@@ -93,20 +93,20 @@ func main() {
 		nutritionParser = gClient
 	}
 	userProfileUC := usecase.NewUserProfileUsecase(userProfileRepo, log)
-	nutritionUC   := usecase.NewNutritionUsecase(nutritionRepo, userProfileUC, nutritionParser, log, tz)
+	nutritionUC := usecase.NewNutritionUsecase(nutritionRepo, userProfileUC, nutritionParser, log, tz)
 
 	var workoutParser domain.WorkoutParser
 	if gClient, ok := llmClient.(domain.WorkoutParser); ok {
 		workoutParser = gClient
 	}
 	workoutUC := usecase.NewWorkoutUsecase(workoutRepo, workoutParser, waSender, cfg.WAPhoneNumber, log, tz)
-	budgetUC  := usecase.NewBudgetUsecase(budgetRepo, expenseRepo, userProfileUC, log, tz)
+	budgetUC := usecase.NewBudgetUsecase(budgetRepo, expenseRepo, userProfileUC, log, tz)
 	briefingUC := usecase.NewBriefingUsecase(reminderRepo, expenseUC, budgetUC, nutritionUC, workoutRepo, userProfileUC, waSender, cfg.WAPhoneNumber, log, tz)
 
 	chatUC := usecase.NewChatUsecase(chatRepo, memoryRepo, llmClient, searchClient, reminderUC, expenseUC, nutritionUC, workoutUC, budgetUC, briefingUC, log, tz)
 
 	// ── 8. Register WhatsApp message handler ──────────────────────────────────
-	// waSender.RegisterMessageHandler(chatUC)
+	waSender.RegisterMessageHandler(chatUC)
 
 	// ── 9. Scheduler ─────────────────────────────────────────────────────────
 	sched := scheduler.NewScheduler(reminderUC, expenseUC, workoutUC, briefingUC, log, tz)
